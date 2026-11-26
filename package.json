@@ -1,0 +1,30 @@
+{
+  "name": "ada-wong-discord-music-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord music bot Ada Wong with per-server queues and a local dashboard.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.11.0",
+    "@discordjs/voice": "^0.19.2",
+    "@distube/ytdl-core": "^5.2.1",
+    "@stablelib/xchacha20poly1305": "^2.0.1",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.8.4",
+    "opusscript": "^0.0.8",
+    "play-dl": "^1.9.7",
+    "sodium-native": "^5.2.2",
+    "yt-search": "^2.13.1"
+  }
+}

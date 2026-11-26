@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111114">
+    <title>Ada Wong — Music Dashboard</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #111114; color: #f5f2ef; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0, #40151d 0, #191518 42%, #111114 76%); }
+      main { width: min(100%, 760px); }
+      header { display: flex; align-items: center; gap: 18px; margin-bottom: 32px; }
+      .mark { width: 58px; height: 58px; display: grid; place-items: center; border: 1px solid #aa3444; border-radius: 18px; color: #ffb1b8; font-size: 24px; font-weight: 800; background: #35161d; box-shadow: 0 0 36px #a1283a33; }
+      h1 { margin: 0; font-size: clamp(26px, 5vw, 38px); letter-spacing: -.04em; }
+      .sub { margin: 6px 0 0; color: #aaa1a0; }
+      .card { padding: clamp(22px, 5vw, 38px); border: 1px solid #373034; border-radius: 24px; background: #1b191cdd; box-shadow: 0 24px 80px #0006; }
+      .status { display: flex; align-items: center; gap: 10px; color: #c6bdba; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #d3a047; box-shadow: 0 0 14px currentColor; }
+      .dot.online { background: #50cf91; }
+      .dot.offline { background: #e85a68; }
+      .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 26px; }
+      .metric { padding: 18px; border: 1px solid #332e31; border-radius: 16px; background: #211e21; }
+      .metric strong { display: block; font-size: 28px; letter-spacing: -.04em; }
+      .metric span { display: block; margin-top: 5px; color: #a9a0a0; font-size: 13px; }
+      .note { margin: 26px 0 0; padding-top: 18px; border-top: 1px solid #332e31; color: #aaa1a0; font-size: 13px; line-height: 1.65; }
+      .error { color: #ff929c; }
+      .settings { margin-top: 30px; padding-top: 24px; border-top: 1px solid #332e31; }
+      h2 { margin: 0 0 8px; font-size: 18px; }
+      .settings-help, #settings-message { color: #aaa1a0; font-size: 13px; line-height: 1.6; }
+      .settings-auth, .setting-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+      .settings-auth input, select, button { min-height: 42px; border: 1px solid #494044; border-radius: 10px; background: #141315; color: #f5f2ef; padding: 0 12px; font: inherit; }
+      .settings-auth input { flex: 1; min-width: 0; }
+      button { cursor: pointer; border-color: #8e2938; background: #63202b; }
+      button:hover { background: #7b2936; }
+      #settings-panel { margin-top: 18px; }
+      .setting-row { justify-content: space-between; flex-wrap: wrap; }
+      .setting-row select { min-width: 190px; }
+      #volume { accent-color: #ca5362; }
+      #volume-value { min-width: 38px; color: #ffb1b8; text-align: right; }
+      .check-row { justify-content: flex-start; }
+      .check-row input { accent-color: #ca5362; width: 18px; height: 18px; }
+      #settings-message.success { color: #78dda9; }
+      @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } .metric { display: flex; align-items: baseline; justify-content: space-between; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mark" aria-hidden="true">A</div>
+        <div>
+          <h1>Ada Wong</h1>
+          <p class="sub">Discord Music Bot · Dashboard</p>
+        </div>
+      </header>
+      <section class="card" aria-live="polite">
+        <div class="status"><span id="dot" class="dot"></span><span id="status">Menghubungkan...</span></div>
+        <div class="grid">
+          <div class="metric"><strong id="servers">—</strong><span>Server Discord</span></div>
+          <div class="metric"><strong id="connections">—</strong><span>Koneksi voice</span></div>
+          <div class="metric"><strong id="players">—</strong><span>Pemutar aktif</span></div>
+        </div>
+        <section class="settings" aria-labelledby="settings-heading">
+          <h2 id="settings-heading">Pengaturan server</h2>
+          <p class="settings-help">Masukkan token dashboard dari file konfigurasi bot. Token disimpan di session browser ini saja.</p>
+          <div class="settings-auth">
+            <input id="dashboard-token" type="password" placeholder="Token dashboard" autocomplete="off" aria-label="Token dashboard">
+            <button id="connect-button" type="button">Hubungkan</button>
+          </div>
+          <div id="settings-panel" hidden>
+            <label class="setting-row">Server
+              <select id="guild-select" aria-label="Pilih server"></select>
+            </label>
+            <label class="setting-row" for="volume">Volume
+              <span><input id="volume" type="range" min="0" max="100" value="50"><output id="volume-value">50%</output></span>
+            </label>
+            <label class="setting-row check-row" for="autoplay">
+              <input id="autoplay" type="checkbox"> Autoplay saat antrean habis
+            </label>
+            <label class="setting-row">Loop
+              <select id="loop-mode">
+                <option value="off">Mati</option>
+                <option value="track">Lagu ini</option>
+                <option value="queue">Seluruh antrean</option>
+              </select>
+            </label>
+            <div class="setting-row"><span></span><button id="save-button" type="button">Simpan pengaturan</button></div>
+          </div>
+          <p id="settings-message" role="status" aria-live="polite"></p>
+        </section>
+        <p class="note">Dashboard ini menampilkan status bot dan mengatur volume, autoplay, serta loop. Gunakan slash command di Discord untuk mengelola antrean dan pemutaran.</p>
+      </section>
+    </main>
+    <script>
+      async function refresh() {
+        const status = document.getElementById("status");
+        try {
+          const response = await fetch("/api/status", { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          status.textContent = data.status === "online" ? "Bot online" : "Bot sedang memulai";
+          document.getElementById("dot").className = `dot ${data.status === "online" ? "online" : ""}`;
+          document.getElementById("servers").textContent = data.servers;
+          document.getElementById("connections").textContent = data.voiceConnections;
+          document.getElementById("players").textContent = data.activePlayers;
+        } catch (error) {
+          status.textContent = "Dashboard tidak dapat terhubung ke bot";
+          status.classList.add("error");
+          document.getElementById("dot").className = "dot offline";
+        }
+      }
+
+      const tokenInput = document.getElementById("dashboard-token");
+      const guildSelect = document.getElementById("guild-select");
+      const settingsPanel = document.getElementById("settings-panel");
+      const settingsMessage = document.getElementById("settings-message");
+      tokenInput.value = sessionStorage.getItem("ada-dashboard-token") || "";
+
+      async function dashboardFetch(url, options = {}) {
+        const headers = new Headers(options.headers || {});
+        headers.set("Authorization", `Bearer ${tokenInput.value.trim()}`);
+        if (options.body) headers.set("Content-Type", "application/json");
+        const response = await fetch(url, { ...options, headers, cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+      }
+
+      async function loadGuildSettings() {
+        const guildId = guildSelect.value;
+        if (!guildId) {
+          settingsPanel.hidden = true;
+          return;
+        }
+        try {
+          const data = await dashboardFetch(`/api/guilds/${encodeURIComponent(guildId)}/settings`);
+          document.getElementById("volume").value = data.volume;
+          document.getElementById("volume-value").value = `${data.volume}%`;
+          document.getElementById("autoplay").checked = data.autoplay;
+          document.getElementById("loop-mode").value = data.loopMode;
+          settingsPanel.hidden = false;
+          settingsMessage.textContent = "";
+        } catch (error) {
+          settingsMessage.textContent = error.message;
+          settingsMessage.className = "error";
+        }
+      }
+
+      async function connectDashboard() {
+        settingsMessage.className = "";
+        settingsMessage.textContent = "Memuat daftar server...";
+        sessionStorage.setItem("ada-dashboard-token", tokenInput.value.trim());
+        try {
+          const guilds = await dashboardFetch("/api/guilds");
+          guildSelect.replaceChildren();
+          for (const guild of guilds) {
+            const option = document.createElement("option");
+            option.value = guild.id;
+            option.textContent = guild.name;
+            guildSelect.append(option);
+          }
+          if (guilds.length === 0) {
+            settingsPanel.hidden = true;
+            settingsMessage.textContent = "Bot belum tergabung di server mana pun.";
+            return;
+          }
+          settingsMessage.textContent = "";
+          await loadGuildSettings();
+        } catch (error) {
+          settingsPanel.hidden = true;
+          settingsMessage.textContent = error.message;
+          settingsMessage.className = "error";
+        }
+      }
+
+      document.getElementById("connect-button").addEventListener("click", connectDashboard);
+      document.getElementById("guild-select").addEventListener("change", loadGuildSettings);
+      document.getElementById("volume").addEventListener("input", (event) => {
+        document.getElementById("volume-value").value = `${event.target.value}%`;
+      });
+      document.getElementById("save-button").addEventListener("click", async () => {
+        settingsMessage.className = "";
+        settingsMessage.textContent = "Menyimpan...";
+        try {
+          await dashboardFetch(`/api/guilds/${encodeURIComponent(guildSelect.value)}/settings`, {
+            method: "POST",
+            body: JSON.stringify({
+              volume: Number(document.getElementById("volume").value),
+              autoplay: document.getElementById("autoplay").checked,
+              loopMode: document.getElementById("loop-mode").value
+            })
+          });
+          settingsMessage.textContent = "Pengaturan berhasil disimpan.";
+          settingsMessage.className = "success";
+        } catch (error) {
+          settingsMessage.textContent = error.message;
+          settingsMessage.className = "error";
+        }
+      });
+
+      refresh();
+      setInterval(refresh, 10000);
+    </script>
+  </body>
+</html>
