@@ -6,9 +6,39 @@ const {
   createAudioResource
 } = require("@discordjs/voice");
 const { EventEmitter } = require("node:events");
-const { spawn } = require("node:child_process");
-const ffmpegPath = require("ffmpeg-static");
+const { spawn, execSync } = require("node:child_process");
+const fs = require("node:fs");
+const staticFfmpeg = require("ffmpeg-static");
 const { openAudioStream, getAutoplayRecommendation } = require("./audio-source");
+
+// Cari binary ffmpeg yang valid (baik dari ffmpeg-static maupun dari sistem OS hosting)
+function getFfmpegBinary() {
+  if (staticFfmpeg && fs.existsSync(staticFfmpeg)) {
+    try {
+      fs.accessSync(staticFfmpeg, fs.constants.X_OK);
+      return staticFfmpeg;
+    } catch {
+      // coba buat executable jika di linux
+      try {
+        fs.chmodSync(staticFfmpeg, 0o755);
+        return staticFfmpeg;
+      } catch {
+        // lanjut cek system ffmpeg
+      }
+    }
+  }
+
+  // Coba cek ffmpeg bawaan sistem hosting
+  try {
+    execSync("ffmpeg -version", { stdio: "ignore" });
+    return "ffmpeg";
+  } catch {
+    // jika tetap tidak ada, kembalikan static path
+    return staticFfmpeg || "ffmpeg";
+  }
+}
+
+const ffmpegExecutable = getFfmpegBinary();
 
 const MAX_QUEUE_SIZE = 100;
 
@@ -58,21 +88,20 @@ function createMusicManager({ allowedHosts, logger }) {
         queue.lastTrack = previous;
         if (previous.url) queue.playedUrls.add(previous.url);
 
-        // Jika bukan di-skip dan loop aktif
+        // Jika bukan di-skip dan mode loop aktif
         if (!skipped && queue.loopMode === "track") {
           queue.tracks.unshift(previous);
         } else if (!skipped && queue.loopMode === "queue") {
           queue.tracks.push(previous);
-        } else if (queue.tracks.length === 0) {
-          // Antrean habis (baik karena lagu selesai maupun karena tombol LEWATI/skip ditekan)
-          // Otomatis cari lagu rekomendasi (Autoplay cerdas)
+        } else if (queue.autoplay && queue.tracks.length === 0) {
+          // Autoplay: hanya cari lagu baru jika fitur autoplay aktif (diset user)
           try {
             const nextTrack = await getAutoplayRecommendation(previous, queue.playedUrls);
             if (nextTrack) {
               queue.tracks.push(nextTrack);
             }
           } catch (err) {
-            logger.error(`[${guildId}] Autoplay on skip/finish failed:`, err);
+            logger.error(`[${guildId}] Autoplay failed:`, err);
           }
         }
       }
@@ -126,7 +155,7 @@ function createMusicManager({ allowedHosts, logger }) {
         "pipe:1"
       ];
 
-      const process = spawn(ffmpegPath, ffmpegArgs, {
+      const process = spawn(ffmpegExecutable, ffmpegArgs, {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
@@ -176,8 +205,13 @@ function createMusicManager({ allowedHosts, logger }) {
       if (generation !== queue.generation) return;
       logger.error(`[${guildId}] Tidak dapat memutar "${track.title}":`, error);
       queue.current = null;
-      queue.lastTrack = track;
-      void playNext(guildId, queue);
+      queue.skipCurrent = false;
+      // Jangan langsung memutar next secara instan jika error berturut-turut untuk mencegah spam
+      setTimeout(() => {
+        if (generation === queue.generation) {
+          void playNext(guildId, queue);
+        }
+      }, 1000);
     }
   }
 

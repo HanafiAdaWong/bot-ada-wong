@@ -250,13 +250,14 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
       const isFirst = !queue.current && queue.tracks.length === 0;
       music.addTrack(guildId, track, getDefaults(guildId));
 
-      const card = createMusicCard(
-        isFirst ? "Sedang Memutar" : "Ditambahkan ke Antrean",
-        track,
-        queue,
-        guild
-      );
-      return sendReply({ embeds: [card], components: [controls()] });
+      if (!isFirst) {
+        // Jika lagu ditambahkan ke antrean (bukan langsung diputar), kirim card "Ditambahkan"
+        // Jika langsung diputar, biarkan event trackStart yang kirim card "Sedang Memutar"
+        const card = createMusicCard("Ditambahkan ke Antrean", track, queue, guild);
+        return sendReply({ embeds: [card], components: [controls()] });
+      }
+      // Untuk lagu pertama: event trackStart akan kirim card secara otomatis
+      return sendReply({ content: `🎵 Mencari dan memutar **${track.title}**...` });
     } else {
       const { count } = music.addTracks(guildId, tracks, getDefaults(guildId));
       const embed = new EmbedBuilder()
@@ -594,8 +595,7 @@ const dashboard = app.listen(config.port, config.dashboardHost, () => {
   logger.info(`Dashboard lokal tersedia di http://${config.dashboardHost}:${config.port}`);
 });
 dashboard.on("error", (error) => {
-  logger.error("Dashboard gagal dijalankan:", error);
-  process.exitCode = 1;
+  logger.warn("Peringatan: Dashboard HTTP tidak dapat dibuka di port ini (umum pada hosting bot container). Bot Discord tetap berjalan normal:", error.message);
 });
 
 client.login(config.token).catch((error) => {
