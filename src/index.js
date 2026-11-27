@@ -129,7 +129,6 @@ function createMusicCard(statusTitle, track, queue, guild) {
   const channelName = queue.voiceChannelName ? `🔊 ${queue.voiceChannelName}` : "🔊 Voice Channel";
   const requesterDisplay = track.requesterId ? `<@${track.requesterId}>` : (track.requester || "User");
 
-  // Hitung playback seconds saat ini
   let elapsedSec = 0;
   if (queue.startedAt) {
     elapsedSec = Math.floor((Date.now() - queue.startedAt) / 1000);
@@ -187,7 +186,8 @@ function createHelpEmbed() {
         value: [
           "• `awp <judul/link>` — Putar lagu langsung *(contoh: `awp NewJeans Super Shy`)*",
           "• `aws` / `awsearch <judul>` — Cari lagu dan pilih dari dropdown menu",
-          "• `awl` / `awlyrics [judul]` — Tampilkan lirik lagu (bisa ditutup dengan tombol)",
+          "• `awremove <nomor>` / `awdel <nomor>` — Hapus lagu tertentu dari antrean",
+          "• `awl` / `awlyrics [judul]` — Tampilkan lirik lagu (dengan tombol tutup)",
           "• `awpause` & `awresume` — Jeda atau lanjutkan lagu (khusus pengundang pertama)",
           "• `awskip` / `awn` — Lewati lagu (hanya peminta lagu)",
           "• `awstop` — Hentikan musik & keluar",
@@ -201,6 +201,7 @@ function createHelpEmbed() {
         value: [
           "• `/play <query>` — Putar lagu",
           "• `/search <query>` — Cari lagu dan pilih pilihan",
+          "• `/remove <nomor>` — Hapus lagu tertentu dari antrean",
           "• `/lyrics [judul]` — Tampilkan lirik",
           "• `/pause` & `/resume` — Jeda / Lanjut",
           "• `/skip` & `/stop` — Lewati / Hentikan",
@@ -225,7 +226,6 @@ function startProgressUpdater(guildId, queue, message) {
     clearInterval(progressIntervals.get(guildId));
   }
 
-  // Update embed setiap 8 detik agar progress bar berjalan tanpa terkena rate-limit Discord
   const interval = setInterval(async () => {
     if (!queue.current || !message || queue.player?.state?.status !== "playing") {
       return;
@@ -254,11 +254,22 @@ music.events.on("trackStart", async ({ guildId, queue, track }) => {
   stopProgressUpdater(guildId);
   queue.startedAt = Date.now();
 
+  // Hapus kartu lagu sebelumnya agar chat bersih tidak menumpuk
+  if (queue.lastCardMessage) {
+    try {
+      await queue.lastCardMessage.delete();
+    } catch {
+      // pesan mungkin sudah dihapus manual oleh user
+    }
+    queue.lastCardMessage = null;
+  }
+
   if (!queue.textChannel) return;
   try {
     const embed = createMusicCard("Now playing", track, queue);
     const sentMsg = await queue.textChannel.send({ embeds: [embed], components: createControlRows(queue) });
     queue.cardMessage = sentMsg;
+    queue.lastCardMessage = sentMsg;
     startProgressUpdater(guildId, queue, sentMsg);
   } catch (err) {
     logger.error(`[${guildId}] Gagal mengirim kartu musik:`, err);
@@ -277,6 +288,30 @@ async function connectToVoice(guild, channel, inviterMember = null) {
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: true
+    });
+
+    // Tangani disconnect otomatis (jika bot di-kick atau channel dihapus)
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000)
+        ]);
+      } catch {
+        // Benar-benar terputus / di-disconnect
+        stopProgressUpdater(guild.id);
+        music.stop(guild.id);
+      }
+    });
+
+    connection.on(VoiceConnectionStatus.Destroyed, () => {
+      stopProgressUpdater(guild.id);
+      const queue = music.queues.get(guild.id);
+      if (queue) {
+        queue.connection = null;
+        queue.voiceChannelId = null;
+        queue.voiceChannelName = null;
+      }
     });
   }
 
@@ -317,7 +352,6 @@ async function handleButton(interaction) {
   const guildId = interaction.guildId;
   const queue = music.getQueue(guildId, getDefaults(guildId));
 
-  // Tombol tutup lirik bisa diklik siapa saja di text channel
   if (interaction.customId === "ada_close_lyrics") {
     try {
       await interaction.message.delete();
@@ -343,7 +377,6 @@ async function handleButton(interaction) {
         return replyError(interaction, "Musik sudah dalam keadaan dijeda.");
       }
       if (!queue.player.pause()) return replyError(interaction, "Tidak ada musik yang sedang diputar.");
-      // Update tampilan kartu tombol
       if (queue.cardMessage) {
         const embed = createMusicCard("Paused", queue.current, queue, interaction.guild);
         queue.cardMessage.edit({ embeds: [embed], components: createControlRows(queue) }).catch(() => {});
@@ -402,7 +435,7 @@ async function handleButton(interaction) {
 
     case "ada_lyrics_btn": {
       if (!queue.current) return replyError(interaction, "Tidak ada lagu yang sedang diputar.");
-      await interaction.deferReply({ ephemeral: false }); // Publik, semua orang bisa baca
+      await interaction.deferReply({ ephemeral: false });
       const lirikData = await fetchLyrics(queue.current.title, queue.current.artist);
       if (!lirikData) {
         return interaction.editReply(`Maaf, lirik untuk **${queue.current.title}** tidak ditemukan.`);
@@ -456,9 +489,11 @@ async function handleSelectMenu(interaction) {
 
   if (!isFirst) {
     const card = createMusicCard("Added to queue", track, queue, interaction.guild);
-    await interaction.editReply({ content: `✅ Memilih: **${track.title}**`, embeds: [card], components: createControlRows(queue) });
+    const sentCard = await interaction.editReply({ content: null, embeds: [card], components: createControlRows(queue) });
+    setTimeout(() => { sentCard.delete().catch(() => {}); }, 15000);
   } else {
-    await interaction.editReply({ content: `🎵 Memuat dan memutar **${track.title}**...`, embeds: [], components: [] });
+    // Hapus menu pilihan search agar chat bersih
+    await interaction.deleteReply().catch(() => {});
   }
 }
 
@@ -474,8 +509,16 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
   if (!voiceChannel) {
     return sendReply("⚠️ Masuk ke voice channel terlebih dahulu.");
   }
+
+  // Jika bot tercatat di room lain tapi sudah tidak ada koneksi aktif atau room kosong, otomatis pindah
   if (queue.connection && queue.connection.joinConfig.channelId !== voiceChannel.id) {
-    return sendReply("Ada Wong sudah terhubung ke voice channel lain di server ini.");
+    const currentChannel = guild.channels.cache.get(queue.connection.joinConfig.channelId);
+    if (!currentChannel || currentChannel.members.filter((m) => !m.user.bot).size === 0) {
+      queue.connection.destroy();
+      queue.connection = null;
+    } else {
+      return sendReply("Ada Wong sudah terhubung ke voice channel lain di server ini.");
+    }
   }
 
   try {
@@ -500,9 +543,20 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
 
       if (!isFirst) {
         const card = createMusicCard("Added to queue", track, queue, guild);
-        return sendReply({ embeds: [card], components: createControlRows(queue) });
+        const replyMsg = await sendReply({ embeds: [card], components: createControlRows(queue) });
+        // Hapus notif 'Added to queue' setelah 15 detik agar chat bersih
+        if (replyMsg?.delete) {
+          setTimeout(() => replyMsg.delete().catch(() => {}), 15000);
+        }
+        return replyMsg;
+      } else {
+        const loadingMsg = await sendReply({ content: `🎵 Memuat dan memutar **${track.title}**...` });
+        // Hapus pesan loading setelah 5 detik begitu kartu utama muncul
+        if (loadingMsg?.delete) {
+          setTimeout(() => loadingMsg.delete().catch(() => {}), 5000);
+        }
+        return loadingMsg;
       }
-      return sendReply({ content: `🎵 Memuat dan memutar **${track.title}**...` });
     } else {
       const { count } = music.addTracks(guildId, tracks, getDefaults(guildId));
       const embed = new EmbedBuilder()
@@ -512,7 +566,11 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
         .setDescription(`🎵 Diminta oleh: <@${requesterId}>\nAntrean saat ini: **${queue.tracks.length} lagu**`)
         .setFooter({ text: `Volume: ${queue.volume}% — Ada Wong • ${getIndonesianTime()} WIB` });
 
-      return sendReply({ embeds: [embed], components: createControlRows(queue) });
+      const replyMsg = await sendReply({ embeds: [embed], components: createControlRows(queue) });
+      if (replyMsg?.delete) {
+        setTimeout(() => replyMsg.delete().catch(() => {}), 15000);
+      }
+      return replyMsg;
     }
   } catch (error) {
     logger.error(`[${guildId}] Play error:`, error);
@@ -521,7 +579,7 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
 }
 
 /**
- * Eksekusi Search interaktif dengan Dropdown Menu
+ * Eksekusi Search cepat (tanpa lag)
  */
 async function executeSearch(query, member, sendReply) {
   try {
@@ -537,7 +595,6 @@ async function executeSearch(query, member, sendReply) {
     results.slice(0, 10).forEach((t, index) => {
       const uniqueId = `track_${Date.now()}_${index}`;
       searchCache.set(uniqueId, t);
-      // Auto hapus cache setelah 5 menit
       setTimeout(() => searchCache.delete(uniqueId), 300000);
 
       selectMenu.addOptions({
@@ -586,6 +643,15 @@ async function handleCommand(interaction) {
     await interaction.deferReply();
     const query = interaction.options.getString("query");
     return executeSearch(query, interaction.member, (msg) => interaction.editReply(msg));
+  }
+
+  if (command === "remove") {
+    const pos = interaction.options.getInteger("nomor", true);
+    const removed = music.removeTrack(guildId, pos - 1);
+    if (!removed) {
+      return interaction.reply({ content: `⚠️ Tidak ada lagu pada nomor urut **${pos}**. Cek nomor dengan \`/queue\`.`, ephemeral: true });
+    }
+    return interaction.reply({ content: `🗑️ Berhasil menghapus lagu ke-${pos}: **${removed.title}** dari antrean.` });
   }
 
   if (command === "lyrics") {
@@ -714,7 +780,7 @@ async function handleCommand(interaction) {
   }
 }
 
-// Handler Prefix Command (awp, aws, awsearch, awl, dll.)
+// Handler Prefix Command (awp, aws, awsearch, awremove, awl, dll.)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
 
@@ -746,6 +812,20 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply("Gunakan: `aws <judul lagu>` (contoh: `aws Keshi beside you`)");
     }
     return executeSearch(query, message.member, (replyContent) => message.reply(replyContent));
+  }
+
+  // awremove / awdel / awr (Hapus lagu tertentu dari antrean)
+  if (lower.startsWith("awremove ") || lower.startsWith("awdel ") || lower.startsWith("awr ")) {
+    const numStr = content.replace(/^aw(remove|del|r)\s*/i, "").trim();
+    const pos = parseInt(numStr, 10);
+    if (isNaN(pos) || pos < 1) {
+      return message.reply("Gunakan: `awremove <nomor urut>` (contoh: `awremove 2`). Cek nomor dengan `awqueue`.");
+    }
+    const removed = music.removeTrack(message.guild.id, pos - 1);
+    if (!removed) {
+      return message.reply(`⚠️ Tidak ada lagu pada nomor urut **${pos}**. Cek daftar antrean dengan \`awqueue\`.`);
+    }
+    return message.reply(`🗑️ Berhasil menghapus lagu ke-${pos}: **${removed.title}** dari antrean.`);
   }
 
   // awl / awlyrics (Lirik lagu publik dengan tombol tutup)

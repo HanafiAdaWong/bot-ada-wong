@@ -17,6 +17,14 @@ const commands = [
       .setDescription("Judul lagu atau kata kunci")
       .setRequired(true)
       .setMaxLength(500)),
+  new SlashCommandBuilder()
+    .setName("remove")
+    .setDescription("Hapus lagu tertentu dari antrean berdasarkan nomor")
+    .addIntegerOption((option) => option
+      .setName("nomor")
+      .setDescription("Nomor urut lagu di antrean (lihat /queue)")
+      .setMinValue(1)
+      .setRequired(true)),
   new SlashCommandBuilder().setName("pause").setDescription("Jeda musik"),
   new SlashCommandBuilder().setName("resume").setDescription("Lanjutkan musik"),
   new SlashCommandBuilder().setName("skip").setDescription("Lewati lagu yang sedang diputar"),

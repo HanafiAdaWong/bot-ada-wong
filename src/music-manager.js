@@ -59,7 +59,7 @@ function createMusicManager({ allowedHosts, logger }) {
       textChannel: null,
       voiceChannelId: null,
       voiceChannelName: null,
-      voiceStarterId: null,      // Orang yang pertama kali memanggil bot ke voice
+      voiceStarterId: null,
       voiceStarterName: null,
       tracks: [],
       current: null,
@@ -87,7 +87,7 @@ function createMusicManager({ allowedHosts, logger }) {
       if (previous) {
         queue.lastTrack = previous;
         if (previous.url) queue.playedUrls.add(previous.url);
-        if (previous.title) queue.playedUrls.add(previous.title);
+        if (previous.title) queue.playedUrls.add(previous.title.toLowerCase());
 
         // Jika bukan di-skip dan mode loop aktif
         if (!skipped && queue.loopMode === "track") {
@@ -131,7 +131,6 @@ function createMusicManager({ allowedHosts, logger }) {
   }
 
   async function playNext(guildId, queue) {
-    // Jika sedang memutar lagu yang aktif, jangan ganggu sama sekali (mencegah lag / audio terpotong)
     if (queue.current || queue.tracks.length === 0) return;
 
     const track = queue.tracks.shift();
@@ -221,7 +220,6 @@ function createMusicManager({ allowedHosts, logger }) {
       throw new Error(`Antrean penuh (maksimal ${MAX_QUEUE_SIZE} lagu).`);
     }
     queue.tracks.push(track);
-    // Hanya picu playNext jika TIDAK ada lagu yang sedang dimainkan
     if (!queue.current) {
       void playNext(guildId, queue);
     }
@@ -240,6 +238,14 @@ function createMusicManager({ allowedHosts, logger }) {
       void playNext(guildId, queue);
     }
     return { queue, count: added.length };
+  }
+
+  function removeTrack(guildId, index) {
+    const queue = queues.get(guildId);
+    if (!queue || queue.tracks.length === 0) return null;
+    if (index < 0 || index >= queue.tracks.length) return null;
+    const removed = queue.tracks.splice(index, 1);
+    return removed[0] || null;
   }
 
   function skip(guildId) {
@@ -272,6 +278,8 @@ function createMusicManager({ allowedHosts, logger }) {
     queue.currentResource = null;
     queue.voiceStarterId = null;
     queue.voiceStarterName = null;
+    queue.voiceChannelId = null;
+    queue.voiceChannelName = null;
     queue.connection?.destroy();
     queue.connection = null;
     return queue;
@@ -296,7 +304,7 @@ function createMusicManager({ allowedHosts, logger }) {
     return queue;
   }
 
-  return { addTrack, addTracks, getQueue, queues, setAutoplay, setLoopMode, setVolume, skip, stop, events };
+  return { addTrack, addTracks, removeTrack, getQueue, queues, setAutoplay, setLoopMode, setVolume, skip, stop, events };
 }
 
 module.exports = { createMusicManager, MAX_QUEUE_SIZE };

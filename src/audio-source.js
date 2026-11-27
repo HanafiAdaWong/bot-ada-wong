@@ -184,7 +184,7 @@ async function fetchLyrics(trackTitle, artistName = "") {
 }
 
 /**
- * Fitur pencarian lagu untuk memilih lagu yang benar (mengembalikan top 5-10 hasil)
+ * Fitur pencarian lagu cepat & ringan (anti-lag)
  */
 async function searchTracks(query, requester = null) {
   const searchResults = await ytSearch(query.trim());
@@ -211,7 +211,7 @@ async function searchTracks(query, requester = null) {
 async function resolveTracks(query, allowedHosts = [], requester = null) {
   const trimmed = query.trim();
 
-  // 1. Cek YouTube URL (watch, youtu.be, shorts) - PRIORITAS TERTINGGI JIKA INPUT ADALAH URL
+  // 1. Cek YouTube URL (watch, youtu.be, shorts)
   const ytVideoId = extractYouTubeId(trimmed);
   if (ytVideoId) {
     try {
@@ -341,7 +341,7 @@ async function resolveTracks(query, allowedHosts = [], requester = null) {
 }
 
 /**
- * Autoplay Cerdas Berdasarkan Genre & Artis Terkait
+ * Autoplay Cerdas: Acak genre & artis terkait tanpa mengulang lagu yang sama
  */
 async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
   if (!lastTrack || !lastTrack.title) return null;
@@ -354,30 +354,51 @@ async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
     }
 
     if (artistId) {
-      const relRes = await fetch(`https://api.deezer.com/artist/${artistId}/related?limit=5`, {
+      const relRes = await fetch(`https://api.deezer.com/artist/${artistId}/related?limit=15`, {
         signal: AbortSignal.timeout(5000)
       });
       if (relRes.ok) {
         const relData = await relRes.json();
-        const candidateArtists = [artistId, ...(relData.data?.map((a) => a.id) || [])];
+        let relatedArtists = (relData.data || []).map((a) => a.id);
+        
+        // Acak artis terkait (Fisher-Yates shuffle) agar tidak itu-itu saja
+        for (let i = relatedArtists.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [relatedArtists[i], relatedArtists[j]] = [relatedArtists[j], relatedArtists[i]];
+        }
+
+        const candidateArtists = [...relatedArtists.slice(0, 5), artistId];
 
         for (const aid of candidateArtists) {
-          const topRes = await fetch(`https://api.deezer.com/artist/${aid}/top?limit=10`, {
+          const topRes = await fetch(`https://api.deezer.com/artist/${aid}/top?limit=20`, {
             signal: AbortSignal.timeout(5000)
           });
           if (topRes.ok) {
             const topData = await topRes.json();
-            for (const t of topData.data || []) {
-              const fullTitle = `${t.artist?.name} - ${t.title}`;
-              if (playedUrls.has(fullTitle) || playedUrls.has(t.link) || t.title.toLowerCase() === lastTrack.title.toLowerCase()) {
+            const tracks = topData.data || [];
+            
+            // Acak urutan lagu dari artis ini
+            const shuffledTracks = [...tracks].sort(() => Math.random() - 0.5);
+
+            for (const t of shuffledTracks) {
+              const fullTitle = `${t.artist?.name} - ${t.title}`.toLowerCase();
+              const trackUrl = t.link || "";
+
+              if (
+                playedUrls.has(fullTitle) ||
+                playedUrls.has(trackUrl) ||
+                fullTitle.includes(lastTrack.title.toLowerCase()) ||
+                lastTrack.title.toLowerCase().includes(t.title.toLowerCase())
+              ) {
                 continue;
               }
+
               const sec = t.duration || 0;
               return {
-                title: fullTitle,
-                query: `${fullTitle} official audio`,
+                title: `${t.artist?.name} - ${t.title}`,
+                query: `${t.artist?.name} ${t.title} official audio`,
                 artist: t.artist?.name || "",
-                artistId: t.artist?.id || null,
+                artistId: aid,
                 source: "deezer_search",
                 url: t.link,
                 duration: sec,
@@ -394,6 +415,7 @@ async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
     console.warn("Autoplay via Deezer gagal:", err.message);
   }
 
+  // Fallback YouTube Search berbasis artis acak
   let cleanTitle = lastTrack.title
     .replace(/[\(\[\{].*?[\)\]\}]/g, "")
     .replace(/ft\..*|feat\..*/i, "")
@@ -402,30 +424,32 @@ async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
   let artistPart = cleanTitle.includes("-") ? cleanTitle.split("-")[0].trim() : cleanTitle.split(" ").slice(0, 2).join(" ");
   const searchQueries = [
     `${artistPart} mix songs`,
-    `${artistPart} lagu hits`
+    `${artistPart} radio playlist`,
+    `songs like ${cleanTitle}`
   ];
 
-  for (const q of searchQueries) {
-    try {
-      const res = await ytSearch(q);
-      if (res && res.videos && res.videos.length > 0) {
-        for (const video of res.videos) {
-          if (playedUrls.has(video.url) || video.url === lastTrack.url || video.seconds > 600) continue;
-          const sec = video.seconds || 0;
-          return {
-            title: video.title,
-            source: "youtube",
-            url: video.url,
-            duration: sec,
-            durationFormatted: video.timestamp || formatDuration(sec),
-            thumbnail: video.thumbnail || video.image || null,
-            requester: "Autoplay 📻"
-          };
-        }
+  // Ambil query acak
+  const randomQuery = searchQueries[Math.floor(Math.random() * searchQueries.length)];
+  try {
+    const res = await ytSearch(randomQuery);
+    if (res && res.videos && res.videos.length > 0) {
+      const candidates = res.videos.filter((v) => !playedUrls.has(v.url) && v.url !== lastTrack.url && v.seconds <= 600);
+      if (candidates.length > 0) {
+        const video = candidates[Math.floor(Math.random() * candidates.length)];
+        const sec = video.seconds || 0;
+        return {
+          title: video.title,
+          source: "youtube",
+          url: video.url,
+          duration: sec,
+          durationFormatted: video.timestamp || formatDuration(sec),
+          thumbnail: video.thumbnail || video.image || null,
+          requester: "Autoplay 📻"
+        };
       }
-    } catch {
-      // next
     }
+  } catch {
+    // ignore
   }
 
   return null;
