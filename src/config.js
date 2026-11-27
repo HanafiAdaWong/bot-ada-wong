@@ -34,14 +34,14 @@ function validateAudioUrl(value, allowedHosts) {
 }
 
 function readConfig(env = process.env) {
-  const token = (env.DISCORD_TOKEN || "").trim();
-  const clientId = (env.CLIENT_ID || "").trim();
+  // Mendukung DISCORD_TOKEN maupun BOT_TOKEN (variabel bawaan Torchlite)
+  const token = (env.DISCORD_TOKEN || env.BOT_TOKEN || "").trim();
+  const clientId = (env.CLIENT_ID || "1575434005275484160").trim();
 
   const missing = [];
-  if (!token) missing.push("DISCORD_TOKEN");
-  if (!clientId) missing.push("CLIENT_ID");
+  if (!token) missing.push("BOT_TOKEN / DISCORD_TOKEN");
   if (missing.length) {
-    throw new Error(`Konfigurasi wajib belum diisi: ${missing.join(", ")} (isi di file .env atau Environment Variables hosting).`);
+    throw new Error(`Konfigurasi wajib belum diisi: ${missing.join(", ")}.`);
   }
 
   const port = Number(env.PORT || 3000);
