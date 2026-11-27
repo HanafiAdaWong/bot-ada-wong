@@ -476,8 +476,22 @@ async function handleSelectMenu(interaction) {
     return interaction.reply({ content: "⚠️ Masuk ke voice channel terlebih dahulu.", ephemeral: true });
   }
 
-  // Langsung hapus menu pencarian agar UI Discord instan dan tidak menunggu buffering
-  await interaction.deleteReply().catch(() => {});
+  // Jawab interaksi langsung dengan menghapus pesan menu pilihan secara bersih (tanpa error timeout)
+  try {
+    await interaction.deferUpdate();
+    await interaction.deleteReply();
+  } catch {
+    // jika sudah terhapus
+  }
+
+  // Jika ada pesan pemicu (misal chat 'aws judul' dari user), hapus juga agar chat bersih
+  if (track.userTriggerMessage) {
+    try {
+      await track.userTriggerMessage.delete();
+    } catch {
+      // ignore
+    }
+  }
 
   track.requesterId = interaction.user.id;
   track.requester = interaction.member.displayName || interaction.user.username;
@@ -486,7 +500,7 @@ async function handleSelectMenu(interaction) {
   const queue = music.getQueue(guildId, getDefaults(guildId));
   const isFirst = !queue.current && queue.tracks.length === 0;
 
-  // Sambungkan ke voice secara asynchronous
+  // Sambungkan ke voice channel
   connectToVoice(interaction.guild, voiceChannel, interaction.member).catch((err) => {
     logger.error("connectToVoice error in select:", err);
   });
@@ -585,7 +599,7 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
 /**
  * Eksekusi Search cepat (tanpa lag)
  */
-async function executeSearch(query, member, sendReply) {
+async function executeSearch(query, member, sendReply, userTriggerMessage = null) {
   try {
     const results = await searchTracks(query, member.displayName || member.user?.username);
     if (!results || results.length === 0) {
@@ -598,6 +612,7 @@ async function executeSearch(query, member, sendReply) {
 
     results.slice(0, 10).forEach((t, index) => {
       const uniqueId = `track_${Date.now()}_${index}`;
+      t.userTriggerMessage = userTriggerMessage;
       searchCache.set(uniqueId, t);
       setTimeout(() => searchCache.delete(uniqueId), 300000);
 
@@ -815,7 +830,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (!query) {
       return message.reply("Gunakan: `aws <judul lagu>` (contoh: `aws Keshi beside you`)");
     }
-    return executeSearch(query, message.member, (replyContent) => message.reply(replyContent));
+    return executeSearch(query, message.member, (replyContent) => message.reply(replyContent), message);
   }
 
   // awremove / awdel / awr (Hapus lagu tertentu dari antrean)
