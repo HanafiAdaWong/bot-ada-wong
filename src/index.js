@@ -476,8 +476,8 @@ async function handleSelectMenu(interaction) {
     return interaction.reply({ content: "⚠️ Masuk ke voice channel terlebih dahulu.", ephemeral: true });
   }
 
-  await interaction.deferUpdate();
-  await connectToVoice(interaction.guild, voiceChannel, interaction.member);
+  // Langsung hapus menu pencarian agar UI Discord instan dan tidak menunggu buffering
+  await interaction.deleteReply().catch(() => {});
 
   track.requesterId = interaction.user.id;
   track.requester = interaction.member.displayName || interaction.user.username;
@@ -485,15 +485,19 @@ async function handleSelectMenu(interaction) {
   const guildId = interaction.guildId;
   const queue = music.getQueue(guildId, getDefaults(guildId));
   const isFirst = !queue.current && queue.tracks.length === 0;
+
+  // Sambungkan ke voice secara asynchronous
+  connectToVoice(interaction.guild, voiceChannel, interaction.member).catch((err) => {
+    logger.error("connectToVoice error in select:", err);
+  });
+
   music.addTrack(guildId, track, getDefaults(guildId));
 
   if (!isFirst) {
     const card = createMusicCard("Added to queue", track, queue, interaction.guild);
-    const sentCard = await interaction.editReply({ content: null, embeds: [card], components: createControlRows(queue) });
-    setTimeout(() => { sentCard.delete().catch(() => {}); }, 15000);
-  } else {
-    // Hapus menu pilihan search agar chat bersih
-    await interaction.deleteReply().catch(() => {});
+    interaction.channel.send({ embeds: [card], components: createControlRows(queue) }).then((msg) => {
+      setTimeout(() => msg.delete().catch(() => {}), 15000);
+    }).catch(() => {});
   }
 }
 

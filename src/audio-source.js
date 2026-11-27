@@ -42,12 +42,12 @@ function extractYouTubeId(urlStr) {
 }
 
 /**
- * Mengambil metadata lagu dari Deezer API (Sangat cepat, akurat, cover HD)
+ * Mengambil metadata lagu dari Deezer API (Super cepat ~100-200ms)
  */
 async function searchDeezer(query) {
   try {
     const res = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1`, {
-      signal: AbortSignal.timeout(6000)
+      signal: AbortSignal.timeout(4000)
     });
     if (!res.ok) return null;
     const json = await res.json();
@@ -63,7 +63,7 @@ async function searchDeezer(query) {
 async function resolveSpotify(url, requester) {
   try {
     const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`, {
-      signal: AbortSignal.timeout(6000)
+      signal: AbortSignal.timeout(5000)
     });
     if (oembedRes.ok) {
       const data = await oembedRes.json();
@@ -104,7 +104,7 @@ async function resolveDeezer(url, requester) {
   const id = match[2];
 
   try {
-    const res = await fetch(`https://api.deezer.com/${type}/${id}`, { signal: AbortSignal.timeout(6000) });
+    const res = await fetch(`https://api.deezer.com/${type}/${id}`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json();
 
@@ -159,7 +159,7 @@ async function fetchLyrics(trackTitle, artistName = "") {
 
     if (artistName) {
       const url = `https://lrclib.net/api/get?artist_name=${encodeURIComponent(artistName)}&track_name=${encodeURIComponent(clean)}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
       if (res.ok) {
         const json = await res.json();
         if (json.plainLyrics) return { lyrics: json.plainLyrics, title: json.trackName, artist: json.artistName };
@@ -167,7 +167,7 @@ async function fetchLyrics(trackTitle, artistName = "") {
     }
 
     const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(clean)}`;
-    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(5000) });
+    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(4000) });
     if (searchRes.ok) {
       const list = await searchRes.json();
       if (Array.isArray(list) && list.length > 0) {
@@ -184,25 +184,30 @@ async function fetchLyrics(trackTitle, artistName = "") {
 }
 
 /**
- * Fitur pencarian lagu cepat & ringan (anti-lag)
+ * Fitur pencarian lagu cepat & ringan (anti-lag, batasi hasil & waktu respon)
  */
 async function searchTracks(query, requester = null) {
-  const searchResults = await ytSearch(query.trim());
-  if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
+  try {
+    const searchResults = await ytSearch(query.trim());
+    if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
+      return [];
+    }
+    return searchResults.videos.slice(0, 10).map((video) => {
+      const sec = video.seconds || 0;
+      return {
+        title: video.title,
+        source: "youtube",
+        url: video.url,
+        duration: sec,
+        durationFormatted: video.timestamp || formatDuration(sec),
+        thumbnail: video.thumbnail || video.image || null,
+        requester
+      };
+    });
+  } catch (err) {
+    console.warn("searchTracks error:", err.message);
     return [];
   }
-  return searchResults.videos.slice(0, 10).map((video) => {
-    const sec = video.seconds || 0;
-    return {
-      title: video.title,
-      source: "youtube",
-      url: video.url,
-      duration: sec,
-      durationFormatted: video.timestamp || formatDuration(sec),
-      thumbnail: video.thumbnail || video.image || null,
-      requester
-    };
-  });
 }
 
 /**
@@ -302,7 +307,7 @@ async function resolveTracks(query, allowedHosts = [], requester = null) {
     }
   }
 
-  // 6. Pencarian default berupa kata kunci/judul lagu:
+  // 6. Pencarian default berupa kata kunci/judul lagu via Deezer Metadata (cepat):
   const deezerInfo = await searchDeezer(trimmed);
   if (deezerInfo) {
     const title = `${deezerInfo.artist?.name} - ${deezerInfo.title}`;
@@ -341,45 +346,89 @@ async function resolveTracks(query, allowedHosts = [], requester = null) {
 }
 
 /**
- * Autoplay Cerdas Super Cepat & Akurat:
- * 1. Menggunakan ytdl.getRelated (YouTube Radio Algorithm) - Tercepat & sesuai genre
- * 2. Fallback YouTube Search artis/genre
+ * Autoplay Cerdas Berbasis Deezer & Spotify Radio (Super Cepat ~0.5 detik & Satu Genre):
+ * Menggunakan Deezer Artist Radio / Smart Recommendations yang berganti instan dan variatif
  */
 async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
   if (!lastTrack || !lastTrack.title) return null;
 
-  // 1. Prioritas Utama: YouTube getRelated (Algoritma YouTube Mix/Radio resmi)
-  let targetUrl = lastTrack.url;
-  if (!targetUrl || !targetUrl.includes("youtube.com")) {
-    if (lastTrack.actualYtUrl) {
-      targetUrl = lastTrack.actualYtUrl;
-    }
-  }
+  // 1. Ekstrak artist ID atau cari artisnya di Deezer secara instan
+  try {
+    let artistId = lastTrack.artistId;
+    if (!artistId) {
+      let cleanArtistName = lastTrack.artist;
+      if (!cleanArtistName) {
+        const clean = lastTrack.title.replace(/[\(\[\{].*?[\)\]\}]/g, "").trim();
+        cleanArtistName = clean.includes("-") ? clean.split("-")[0].trim() : clean.split(" ").slice(0, 2).join(" ");
+      }
 
-  if (targetUrl && (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be"))) {
-    try {
-      const related = await ytdl.getRelated(targetUrl);
-      if (Array.isArray(related) && related.length > 0) {
-        // Ambil kandidat yang belum pernah diputar dan bukan video live panjang (>12 menit)
-        const validCandidates = related.filter((v) => {
-          if (!v || !v.title || !v.url) return false;
-          const lowerTitle = v.title.toLowerCase();
+      const dzSearch = await searchDeezer(cleanArtistName);
+      artistId = dzSearch?.artist?.id;
+    }
+
+    if (artistId) {
+      // Ambil daftar radio artis Deezer (berisi lagu-lagu se-genre dari berbagai artis mirip)
+      const radioRes = await fetch(`https://api.deezer.com/artist/${artistId}/radio?limit=25`, {
+        signal: AbortSignal.timeout(3500)
+      });
+
+      if (radioRes.ok) {
+        const radioJson = await radioRes.json();
+        const candidateTracks = radioJson.data || [];
+
+        // Acak urutan rekomendasi agar variatif
+        const shuffled = candidateTracks.sort(() => Math.random() - 0.5);
+
+        for (const t of shuffled) {
+          const fullTitle = `${t.artist?.name} - ${t.title}`;
+          const lower = fullTitle.toLowerCase();
           const cleanLast = lastTrack.title.toLowerCase().replace(/[\(\[\{].*?[\)\]\}]/g, "").trim();
 
-          return (
-            !playedUrls.has(v.url) &&
-            !playedUrls.has(lowerTitle) &&
-            !lowerTitle.includes(cleanLast) &&
-            !v.isLive &&
-            v.lengthSeconds > 30 &&
-            v.lengthSeconds <= 720
-          );
+          if (
+            playedUrls.has(lower) ||
+            playedUrls.has(t.link || "") ||
+            lower.includes(cleanLast) ||
+            cleanLast.includes(t.title.toLowerCase()) ||
+            t.duration < 30 ||
+            t.duration > 720
+          ) {
+            continue;
+          }
+
+          const sec = t.duration || 0;
+          return {
+            title: fullTitle,
+            query: `${fullTitle} official audio`,
+            artist: t.artist?.name || "",
+            artistId: t.artist?.id || null,
+            source: "deezer_search",
+            url: t.link || `https://www.deezer.com/track/${t.id}`,
+            duration: sec,
+            durationFormatted: formatDuration(sec),
+            thumbnail: t.album?.cover_big || t.album?.cover || null,
+            requester: "Autoplay 📻"
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Deezer Autoplay error:", err.message);
+  }
+
+  // 2. Fallback instan via YouTube getRelated jika track URL tersedia
+  if (lastTrack.actualYtUrl || (lastTrack.url && (lastTrack.url.includes("youtube") || lastTrack.url.includes("youtu.be")))) {
+    try {
+      const targetUrl = lastTrack.actualYtUrl || lastTrack.url;
+      const related = await ytdl.getRelated(targetUrl);
+      if (Array.isArray(related) && related.length > 0) {
+        const valid = related.filter((v) => {
+          if (!v || !v.title || !v.url) return false;
+          const lower = v.title.toLowerCase();
+          return !playedUrls.has(v.url) && !playedUrls.has(lower) && v.lengthSeconds > 30 && v.lengthSeconds <= 720;
         });
 
-        if (validCandidates.length > 0) {
-          // Ambil acak dari 5 teratas agar lagunya bervariasi dan tetap satu genre
-          const topBatch = validCandidates.slice(0, 5);
-          const chosen = topBatch[Math.floor(Math.random() * topBatch.length)];
+        if (valid.length > 0) {
+          const chosen = valid[Math.floor(Math.random() * Math.min(valid.length, 5))];
           const sec = chosen.lengthSeconds || 0;
           return {
             title: chosen.title,
@@ -392,55 +441,9 @@ async function getAutoplayRecommendation(lastTrack, playedUrls = new Set()) {
           };
         }
       }
-    } catch (e) {
-      console.warn("ytdl.getRelated warning:", e.message);
+    } catch {
+      // ignore
     }
-  }
-
-  // 2. Fallback: Pencarian YouTube Mix dengan artist/title bersih
-  try {
-    let cleanTitle = lastTrack.title
-      .replace(/[\(\[\{].*?[\)\]\}]/g, "")
-      .replace(/ft\..*|feat\..*/i, "")
-      .trim();
-
-    let artistPart = cleanTitle.includes("-") ? cleanTitle.split("-")[0].trim() : cleanTitle.split(" ").slice(0, 2).join(" ");
-    const searchQueries = [
-      `${artistPart} songs`,
-      `${artistPart} mix`,
-      `${cleanTitle} mix`
-    ];
-
-    const chosenQuery = searchQueries[Math.floor(Math.random() * searchQueries.length)];
-    const res = await ytSearch(chosenQuery);
-    if (res && res.videos && res.videos.length > 0) {
-      const candidates = res.videos.filter((v) => {
-        const lower = v.title.toLowerCase();
-        return (
-          !playedUrls.has(v.url) &&
-          !playedUrls.has(lower) &&
-          v.url !== lastTrack.url &&
-          v.seconds > 30 &&
-          v.seconds <= 720
-        );
-      });
-
-      if (candidates.length > 0) {
-        const video = candidates[Math.floor(Math.random() * Math.min(candidates.length, 6))];
-        const sec = video.seconds || 0;
-        return {
-          title: video.title,
-          source: "youtube",
-          url: video.url,
-          duration: sec,
-          durationFormatted: video.timestamp || formatDuration(sec),
-          thumbnail: video.thumbnail || video.image || null,
-          requester: "Autoplay 📻"
-        };
-      }
-    }
-  } catch (err) {
-    console.warn("Fallback autoplay error:", err.message);
   }
 
   return null;
@@ -456,7 +459,7 @@ async function openAudioStream(track, allowedHosts = []) {
       throw new Error(`Tidak dapat menemukan stream audio untuk "${track.title}".`);
     }
     const ytVideo = searchResults.videos[0];
-    track.actualYtUrl = ytVideo.url; // Simpan untuk referensi autoplay getRelated
+    track.actualYtUrl = ytVideo.url;
     if (!track.thumbnail) track.thumbnail = ytVideo.thumbnail || ytVideo.image;
     if (!track.duration || track.duration === 0) {
       track.duration = ytVideo.seconds || 0;
