@@ -23,7 +23,7 @@ const { commands } = require("./commands");
 const { createMusicManager } = require("./music-manager");
 const { createSettingsStore } = require("./settings-store");
 const { readConfig } = require("./config");
-const { resolveTracks } = require("./audio-source");
+const { resolveTracks, fetchLyrics } = require("./audio-source");
 
 const config = readConfig();
 const settings = createSettingsStore(config.dataDir);
@@ -43,45 +43,87 @@ function getDefaults(guildId) {
   return settings.get(guildId);
 }
 
-function controls() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ada_pause").setLabel("Jeda").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("ada_resume").setLabel("Lanjut").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("ada_skip").setLabel("Lewati").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("ada_stop").setLabel("Stop").setStyle(ButtonStyle.Danger)
-  );
+/**
+ * Format waktu saat ini ke Waktu Indonesia Barat (WIB)
+ */
+function getIndonesianTime() {
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date());
 }
 
 /**
- * Membuat Embed UI Modern & Lengkap seperti tampilan bot premium (foto referensi)
+ * Kontrol Tombol Modern sesuai desain FlaviBot (Row 1 & Row 2)
+ */
+function createControlRows(queue) {
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ada_pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ada_skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ada_stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ada_like").setLabel("Like").setEmoji("🤍").setStyle(ButtonStyle.Secondary)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ada_autoplay_toggle")
+      .setLabel("AutoPlay")
+      .setEmoji("🔄")
+      .setStyle(queue?.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("ada_lyrics_btn")
+      .setLabel("Lyrics")
+      .setEmoji("📝")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [row1, row2];
+}
+
+/**
+ * Membuat progress bar elegan (contoh: 🔘━━━━━━━━━━━)
+ */
+function createProgressBar(durationSec) {
+  if (!durationSec || durationSec <= 0) {
+    return "🟣━━━━━━━━━━━━━━━━━━━━";
+  }
+  return "🟣━━━━━━━━━━━━━━━━━━━━";
+}
+
+/**
+ * Membuat Embed UI Modern & Bersih persis seperti foto referensi ke-2 (FlaviBot UI)
  */
 function createMusicCard(statusTitle, track, queue, guild) {
-  const loopDisplay = queue.loopMode === "track"
-    ? "Lagu ini"
-    : queue.loopMode === "queue"
-      ? "Seluruh Antrean"
-      : "Nonaktif";
-
-  const autoplayDisplay = queue.autoplay ? "Aktif" : "Nonaktif";
+  const queueCount = queue.tracks.length;
+  const loopDisplay = queue.loopMode === "track" ? "Track" : queue.loopMode === "queue" ? "Queue" : "Off";
   const duration = track.durationFormatted || "00:00";
-  const requesterTag = track.requester || "Harukashii";
+  const channelName = queue.voiceChannelName ? `🔊 ${queue.voiceChannelName}` : "🔊 Voice Channel";
+  const requesterDisplay = track.requesterId ? `<@${track.requesterId}>` : (track.requester || "User");
+
+  // Garis deskripsi bergaya bullet seperti FlaviBot
+  const descriptionLines = [
+    `[${track.title}](${track.url?.startsWith("http") ? track.url : "https://deezer.com"})`,
+    "",
+    `• Added by ${requesterDisplay}`,
+    `• \`${channelName}\``,
+    "",
+    `Queue Size: **${queueCount}** - Volume: **${queue.volume}%** - Loop: **${loopDisplay}**`,
+    "",
+    `${createProgressBar(track.duration)}`,
+    `\`0:00\`${" ".repeat(30)}\`${duration}\``
+  ];
 
   const embed = new EmbedBuilder()
-    .setColor(0x0099ff) // Biru modern sesuai foto referensi
+    .setColor(0x5865F2) // Warna ungu / biru modern khas bot musik premium
     .setAuthor({
-      name: statusTitle,
+      name: statusTitle || "Now playing",
       iconURL: client.user.displayAvatarURL()
     })
-    .setTitle(track.title)
-    .setURL(track.url?.startsWith("http") ? track.url : null)
-    .addFields(
-      { name: "Durasi", value: duration, inline: true },
-      { name: "Diminta oleh", value: requesterTag, inline: true },
-      { name: "Loop", value: loopDisplay, inline: true },
-      { name: "Autoplay", value: autoplayDisplay, inline: true }
-    )
+    .setDescription(descriptionLines.join("\n"))
     .setFooter({
-      text: `Volume: ${queue.volume}% — Ada Wong • Today at ${new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}`
+      text: `Ada Wong Music • Hari ini pukul ${getIndonesianTime()} WIB`
     });
 
   if (track.thumbnail) {
@@ -96,47 +138,44 @@ function createMusicCard(statusTitle, track, queue, guild) {
  */
 function createHelpEmbed() {
   return new EmbedBuilder()
-    .setColor(0x0099ff)
+    .setColor(0x5865F2)
     .setAuthor({
       name: "Panduan & Perintah Ada Wong Music Bot",
       iconURL: client.user.displayAvatarURL()
     })
-    .setDescription("Bot musik Ada Wong mendukung pencarian YouTube, Spotify, SoundCloud, dan URL audio langsung dengan tombol kontrol dan antrean server.")
+    .setDescription("Bot musik Ada Wong dengan antarmuka modern, pemutar Spotify/Deezer, lirik, dan autoplay genre!")
     .addFields(
       {
-        name: "⚡ Perintah Cepat / Prefix (Ketik langsung di chat):",
+        name: "⚡ Prefix Commands (Ketik langsung di chat):",
         value: [
-          "• `awp <judul/link>` — Putar lagu atau tambahkan ke antrean *(contoh: `awp Pelangi`)*",
-          "• `awstop` / `aws` — Hentikan musik & bot keluar dari voice channel",
-          "• `awskip` / `awn` — Lewati lagu yang sedang diputar",
-          "• `awpause` — Jeda lagu",
-          "• `awresume` — Lanjutkan lagu yang dijeda",
-          "• `awnp` — Tampilkan kartu lagu yang sedang diputar",
+          "• `awp <judul/link>` — Putar lagu dari Spotify / Deezer / YouTube",
+          "• `awl` / `awlyrics [judul]` — Tampilkan lirik lagu",
+          "• `awstop` / `aws` — Hentikan musik & keluar dari voice channel",
+          "• `awskip` / `awn` — Lewati lagu (hanya peminta lagu)",
+          "• `awpause` & `awresume` — Jeda / lanjut (khusus pengundang pertama)",
+          "• `awnp` — Tampilkan kartu musik lagu saat ini",
           "• `awqueue` / `awq` — Tampilkan daftar antrean lagu",
-          "• `awhelp` / `awh` — Menampilkan pesan panduan ini"
+          "• `awhelp` / `awh` — Menampilkan pesan bantuan ini"
         ].join("\n")
       },
       {
         name: "🎮 Slash Commands (Gunakan `/`):",
         value: [
-          "• `/play <query>` — Putar lagu / link musik",
+          "• `/play <query>` — Putar lagu",
+          "• `/lyrics [judul]` — Cari lirik lagu",
           "• `/pause` & `/resume` — Jeda atau lanjutkan lagu",
           "• `/skip` & `/stop` — Lewati atau hentikan lagu",
           "• `/nowplaying` & `/queue` — Info lagu saat ini & antrean",
           "• `/volume <0-100>` — Atur volume pemutaran bot",
-          "• `/loop <off|track|queue>` — Atur mode pengulangan",
-          "• `/autoplay <aktif:true/false>` — Putar ulang otomatis saat lagu habis",
+          "• `/loop <off|track|queue>` — Atur mode loop",
+          "• `/autoplay <aktif:true/false>` — Autoplay rekomendasi genre musik",
           "• `/247 <aktif:true/false>` — Bot tetap stand-by di voice channel (Admin)",
           "• `/help` — Menampilkan bantuan ini"
         ].join("\n")
-      },
-      {
-        name: "💡 Catatan Penting:",
-        value: "Pastikan Anda sudah berada di voice channel sebelum memutar lagu!"
       }
     )
     .setFooter({
-      text: "Ada Wong Music Bot • Solusi Musik Berkualitas Tinggi"
+      text: `Ada Wong Music Bot • ${getIndonesianTime()} WIB`
     });
 }
 
@@ -144,14 +183,14 @@ function createHelpEmbed() {
 music.events.on("trackStart", async ({ guildId, queue, track }) => {
   if (!queue.textChannel) return;
   try {
-    const embed = createMusicCard("Sedang Memutar", track, queue);
-    await queue.textChannel.send({ embeds: [embed], components: [controls()] });
+    const embed = createMusicCard("Now playing", track, queue);
+    await queue.textChannel.send({ embeds: [embed], components: createControlRows(queue) });
   } catch (err) {
-    logger.error(`[${guildId}] Gagal mengirim kartu musik lagu berikutnya:`, err);
+    logger.error(`[${guildId}] Gagal mengirim kartu musik:`, err);
   }
 });
 
-async function connectToVoice(guild, channel) {
+async function connectToVoice(guild, channel, inviterMember = null) {
   let connection = getVoiceConnection(guild.id);
   if (connection && connection.joinConfig.channelId !== channel.id) {
     connection.destroy();
@@ -168,12 +207,21 @@ async function connectToVoice(guild, channel) {
 
   const queue = music.getQueue(guild.id, getDefaults(guild.id));
   queue.connection = connection;
+  queue.voiceChannelId = channel.id;
+  queue.voiceChannelName = channel.name;
+
+  // Catat siapa yang pertama kali mengundang bot ke room
+  if (!queue.voiceStarterId && inviterMember) {
+    queue.voiceStarterId = inviterMember.id;
+    queue.voiceStarterName = inviterMember.displayName || inviterMember.user?.username;
+  }
+
   connection.subscribe(queue.player);
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
   } catch (err) {
-    logger.error(`[${guild.id}] Voice connection failed to reach Ready:`, err);
+    logger.error(`[${guild.id}] Voice connection timeout:`, err);
   }
 
   return queue;
@@ -194,34 +242,90 @@ async function replyError(interaction, message) {
 async function handleButton(interaction) {
   const guildId = interaction.guildId;
   const queue = music.getQueue(guildId, getDefaults(guildId));
+
   if (!canControlInVoice(interaction.member, queue)) {
-    return replyError(interaction, "Masuk ke voice channel bot untuk menggunakan kontrol musik.");
+    return replyError(interaction, "⚠️ Masuk ke voice channel bot untuk menggunakan tombol kontrol.");
   }
 
+  const userId = interaction.user.id;
+  const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+
   switch (interaction.customId) {
-    case "ada_pause":
+    case "ada_pause": {
+      // Hanya pengundang pertama atau Admin yang bisa Jeda
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang pertama kali mengundang bot (<@${queue.voiceStarterId}>) yang dapat menjeda lagu.`);
+      }
       if (!queue.player.pause()) return replyError(interaction, "Tidak ada musik yang sedang diputar.");
       return interaction.reply({ content: "⏸️ Musik dijeda.", ephemeral: true });
-    case "ada_resume":
+    }
+
+    case "ada_resume": {
+      // Hanya pengundang pertama atau Admin yang bisa Lanjut
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang pertama kali mengundang bot (<@${queue.voiceStarterId}>) yang dapat melanjutkan lagu.`);
+      }
       if (!queue.player.unpause()) return replyError(interaction, "Musik tidak sedang dijeda.");
       return interaction.reply({ content: "▶️ Musik dilanjutkan.", ephemeral: true });
-    case "ada_skip":
-      if (!music.skip(guildId)) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
-      return interaction.reply({ content: "⏭️ Lagu dilewati.", ephemeral: true });
-    case "ada_stop":
-      music.stop(guildId);
-      if (getDefaults(guildId).stayInVoice) {
-        const channel = interaction.guild.channels.cache.get(getDefaults(guildId).voiceChannelId);
-        if (channel?.isVoiceBased()) await connectToVoice(interaction.guild, channel);
+    }
+
+    case "ada_skip": {
+      // Hanya orang yang menambahkan lagu yang sedang diputar (atau Admin) yang bisa skip
+      const currentTrack = queue.current;
+      if (!currentTrack) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
+      if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang berhak melewati (skip) lagunya.`);
       }
+      if (!music.skip(guildId)) return replyError(interaction, "Gagal melewati lagu.");
+      return interaction.reply({ content: "⏭️ Lagu dilewati.", ephemeral: true });
+    }
+
+    case "ada_stop": {
+      // Hanya pengundang bot atau admin yang bisa stop
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
+      }
+      music.stop(guildId);
       return interaction.reply({ content: "⏹️ Musik dihentikan.", ephemeral: true });
+    }
+
+    case "ada_like": {
+      return interaction.reply({ content: `❤️ Kamu menyukai lagu **${queue.current?.title || "ini"}**!`, ephemeral: true });
+    }
+
+    case "ada_autoplay_toggle": {
+      const nextState = !queue.autoplay;
+      music.setAutoplay(guildId, nextState, getDefaults(guildId));
+      settings.update(guildId, { autoplay: nextState });
+      return interaction.reply({
+        content: nextState ? "📻 **AutoPlay diaktifkan**: Lagu genre serupa akan diputar otomatis saat antrean habis." : "📻 **AutoPlay dinonaktifkan**.",
+        ephemeral: true
+      });
+    }
+
+    case "ada_lyrics_btn": {
+      await interaction.deferReply({ ephemeral: true });
+      if (!queue.current) return interaction.editReply("Tidak ada lagu yang sedang diputar.");
+      const lirikData = await fetchLyrics(queue.current.title, queue.current.artist);
+      if (!lirikData) {
+        return interaction.editReply(`Maaf, lirik untuk **${queue.current.title}** tidak ditemukan.`);
+      }
+      const lirikSnippet = lirikData.lyrics.length > 3900 ? lirikData.lyrics.slice(0, 3900) + "\n\n...(lirik terpotong)" : lirikData.lyrics;
+      const lyricsEmbed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`📝 Lirik: ${lirikData.title || queue.current.title}`)
+        .setDescription(lirikSnippet)
+        .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
+      return interaction.editReply({ embeds: [lyricsEmbed] });
+    }
+
     default:
       return;
   }
 }
 
 /**
- * Eksekusi play umum (dipakai baik oleh slash command maupun prefix command awp)
+ * Eksekusi play umum (prefix awp dan slash /play)
  */
 async function executePlay(query, member, guild, channel, textChannel, sendReply) {
   const guildId = guild.id;
@@ -230,20 +334,29 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
 
   const voiceChannel = member?.voice?.channel;
   if (!voiceChannel) {
-    return sendReply("Masuk ke voice channel terlebih dahulu.");
+    return sendReply("⚠️ Masuk ke voice channel terlebih dahulu.");
   }
   if (queue.connection && queue.connection.joinConfig.channelId !== voiceChannel.id) {
-    return sendReply("Ada sudah terhubung ke voice channel lain di server ini.");
+    return sendReply("Ada Wong sudah terhubung ke voice channel lain di server ini.");
   }
 
   try {
-    const requester = member.displayName || member.user?.username || "User";
-    const tracks = await resolveTracks(query, config.allowedAudioHosts, requester);
+    const requesterName = member.displayName || member.user?.username || "User";
+    const requesterId = member.id;
+
+    // Hubungkan dulu ke voice channel tanpa lag
+    await connectToVoice(guild, voiceChannel, member);
+
+    // Resolving lagu via Spotify/Deezer/YouTube secara instan
+    const tracks = await resolveTracks(query, config.allowedAudioHosts, requesterName);
     if (!tracks || tracks.length === 0) {
       return sendReply(`Tidak dapat menemukan lagu untuk "${query}".`);
     }
 
-    await connectToVoice(guild, voiceChannel);
+    // Set requester ID untuk proteksi skip
+    for (const t of tracks) {
+      t.requesterId = requesterId;
+    }
 
     if (tracks.length === 1) {
       const track = tracks[0];
@@ -251,23 +364,20 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
       music.addTrack(guildId, track, getDefaults(guildId));
 
       if (!isFirst) {
-        // Jika lagu ditambahkan ke antrean (bukan langsung diputar), kirim card "Ditambahkan"
-        // Jika langsung diputar, biarkan event trackStart yang kirim card "Sedang Memutar"
-        const card = createMusicCard("Ditambahkan ke Antrean", track, queue, guild);
-        return sendReply({ embeds: [card], components: [controls()] });
+        const card = createMusicCard("Added to queue", track, queue, guild);
+        return sendReply({ embeds: [card], components: createControlRows(queue) });
       }
-      // Untuk lagu pertama: event trackStart akan kirim card secara otomatis
-      return sendReply({ content: `🎵 Mencari dan memutar **${track.title}**...` });
+      return sendReply({ content: `🎵 Memuat dan memutar **${track.title}**...` });
     } else {
       const { count } = music.addTracks(guildId, tracks, getDefaults(guildId));
       const embed = new EmbedBuilder()
-        .setColor(0x0099ff)
-        .setAuthor({ name: "Playlist Ditambahkan", iconURL: client.user.displayAvatarURL() })
+        .setColor(0x5865F2)
+        .setAuthor({ name: "Playlist Added", iconURL: client.user.displayAvatarURL() })
         .setTitle(`Menambahkan ${count} lagu ke antrean`)
-        .setDescription(`🎵 Diminta oleh: **${requester}**\nAntrean saat ini: **${queue.tracks.length} lagu**`)
-        .setFooter({ text: `Volume: ${queue.volume}% — Ada Wong` });
+        .setDescription(`🎵 Diminta oleh: <@${requesterId}>\nAntrean saat ini: **${queue.tracks.length} lagu**`)
+        .setFooter({ text: `Volume: ${queue.volume}% — Ada Wong • ${getIndonesianTime()} WIB` });
 
-      return sendReply({ embeds: [embed], components: [controls()] });
+      return sendReply({ embeds: [embed], components: createControlRows(queue) });
     }
   } catch (error) {
     logger.error(`[${guildId}] Play error:`, error);
@@ -280,11 +390,13 @@ async function handleCommand(interaction) {
   const queue = music.getQueue(guildId, getDefaults(guildId));
   queue.textChannel = interaction.channel;
   const command = interaction.commandName;
+  const userId = interaction.user.id;
+  const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 
   if (command === "play") {
     await interaction.deferReply();
-    const query = interaction.options.getString("query") || interaction.options.getString("url");
-    if (!query) return interaction.editReply("Harap masukkan judul lagu atau URL.");
+    const query = interaction.options.getString("query");
+    if (!query) return interaction.editReply("Harap masukkan judul lagu atau link.");
 
     return executePlay(
       query,
@@ -292,8 +404,27 @@ async function handleCommand(interaction) {
       interaction.guild,
       interaction.channel,
       interaction.channel,
-      (msg) => (typeof msg === "string" ? interaction.editReply(msg) : interaction.editReply(msg))
+      (msg) => interaction.editReply(msg)
     );
+  }
+
+  if (command === "lyrics") {
+    await interaction.deferReply();
+    const targetTitle = interaction.options.getString("judul") || queue.current?.title;
+    if (!targetTitle) {
+      return interaction.editReply("Tidak ada lagu yang sedang diputar. Gunakan `/lyrics <judul lagu>` untuk mencari.");
+    }
+    const lirik = await fetchLyrics(targetTitle, queue.current?.artist || "");
+    if (!lirik) {
+      return interaction.editReply(`Lirik untuk **${targetTitle}** tidak ditemukan.`);
+    }
+    const snippet = lirik.lyrics.length > 3900 ? lirik.lyrics.slice(0, 3900) + "\n\n...(lirik terpotong)" : lirik.lyrics;
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(`📝 Lirik: ${lirik.title || targetTitle}`)
+      .setDescription(snippet)
+      .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
+    return interaction.editReply({ embeds: [embed] });
   }
 
   if (command === "pause" || command === "resume" || command === "skip" ||
@@ -305,23 +436,35 @@ async function handleCommand(interaction) {
   }
 
   switch (command) {
-    case "pause":
-      if (!queue.player.pause()) return replyError(interaction, "Tidak ada musik yang sedang diputar.");
-      return interaction.reply("Musik dijeda.");
-    case "resume":
-      if (!queue.player.unpause()) return replyError(interaction, "Musik tidak sedang dijeda.");
-      return interaction.reply("Musik dilanjutkan.");
-    case "skip":
-      if (!music.skip(guildId)) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
-      return interaction.reply("Lagu dilewati.");
-    case "stop": {
-      music.stop(guildId);
-      const saved = getDefaults(guildId);
-      if (saved.stayInVoice) {
-        const channel = interaction.guild.channels.cache.get(saved.voiceChannelId);
-        if (channel?.isVoiceBased()) await connectToVoice(interaction.guild, channel);
+    case "pause": {
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang pertama mengundang bot (<@${queue.voiceStarterId}>) yang dapat menjeda.`);
       }
-      return interaction.reply("Musik dihentikan.");
+      if (!queue.player.pause()) return replyError(interaction, "Tidak ada musik yang sedang diputar.");
+      return interaction.reply("⏸️ Musik dijeda.");
+    }
+    case "resume": {
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang pertama mengundang bot (<@${queue.voiceStarterId}>) yang dapat melanjutkan.`);
+      }
+      if (!queue.player.unpause()) return replyError(interaction, "Musik tidak sedang dijeda.");
+      return interaction.reply("▶️ Musik dilanjutkan.");
+    }
+    case "skip": {
+      const currentTrack = queue.current;
+      if (!currentTrack) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
+      if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang dapat melewati (skip) lagunya.`);
+      }
+      if (!music.skip(guildId)) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
+      return interaction.reply("⏭️ Lagu dilewati.");
+    }
+    case "stop": {
+      if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+        return replyError(interaction, `⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
+      }
+      music.stop(guildId);
+      return interaction.reply("⏹️ Musik dihentikan.");
     }
     case "queue": {
       const current = queue.current ? `Sedang diputar: **${queue.current.title}**` : "Tidak ada lagu yang sedang diputar.";
@@ -329,7 +472,7 @@ async function handleCommand(interaction) {
       const more = queue.tracks.length > tracks.length ? `\n...dan ${queue.tracks.length - tracks.length} lagu lainnya.` : "";
       return interaction.reply({
         embeds: [new EmbedBuilder()
-          .setColor(0x0099ff)
+          .setColor(0x5865F2)
           .setTitle("Antrean Ada Wong")
           .setDescription([current, "", ...tracks, more].filter(Boolean).join("\n"))],
         ephemeral: true
@@ -338,8 +481,8 @@ async function handleCommand(interaction) {
     case "nowplaying":
       if (!queue.current) return replyError(interaction, "Tidak ada lagu yang sedang diputar.");
       return interaction.reply({
-        embeds: [createMusicCard("Sedang Memutar", queue.current, queue, interaction.guild)],
-        components: [controls()]
+        embeds: [createMusicCard("Now playing", queue.current, queue, interaction.guild)],
+        components: createControlRows(queue)
       });
     case "volume": {
       const volume = interaction.options.getInteger("level", true);
@@ -352,8 +495,8 @@ async function handleCommand(interaction) {
       music.setAutoplay(guildId, enabled, getDefaults(guildId));
       settings.update(guildId, { autoplay: enabled });
       return interaction.reply(enabled
-        ? "Autoplay aktif: lagu terakhir akan diputar ulang saat antrean habis."
-        : "Autoplay dimatikan.");
+        ? "📻 **Autoplay aktif**: Bot akan mencari lagu rekomendasi sesuai genre & artis."
+        : "📻 Autoplay dimatikan.");
     }
     case "loop": {
       const mode = interaction.options.getString("mode", true);
@@ -363,21 +506,18 @@ async function handleCommand(interaction) {
     }
     case "247": {
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        return replyError(interaction, "Perintah 24/7 hanya dapat diatur oleh anggota dengan izin Manage Server.");
+        return replyError(interaction, "Perintah 24/7 hanya dapat diatur oleh Admin.");
       }
       const enabled = interaction.options.getBoolean("aktif", true);
       const channel = interaction.member?.voice?.channel;
       if (enabled && !channel) return replyError(interaction, "Masuk ke voice channel yang ingin dijaga terlebih dahulu.");
-      if (enabled && queue.connection && queue.connection.joinConfig.channelId !== channel.id) {
-        return replyError(interaction, "Ada sedang berada di voice channel lain.");
-      }
       if (enabled) {
-        await connectToVoice(interaction.guild, channel);
+        await connectToVoice(interaction.guild, channel, interaction.member);
         settings.update(guildId, { stayInVoice: true, voiceChannelId: channel.id });
-        return interaction.reply("Mode 24/7 aktif. Bot akan mencoba kembali ke voice channel ini setelah restart.");
+        return interaction.reply("Mode 24/7 aktif.");
       }
       settings.update(guildId, { stayInVoice: false, voiceChannelId: null });
-      return interaction.reply("Mode 24/7 dimatikan. Koneksi saat ini tidak diputus.");
+      return interaction.reply("Mode 24/7 dimatikan.");
     }
     case "help": {
       return interaction.reply({ embeds: [createHelpEmbed()], ephemeral: false });
@@ -387,18 +527,20 @@ async function handleCommand(interaction) {
   }
 }
 
-// Handler Prefix Command (misalnya: awp, awplay, awstop, dll.)
+// Handler Prefix Command (awp, awstop, awskip, awl, dll.)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
 
   const content = message.content.trim();
   const lower = content.toLowerCase();
+  const userId = message.author.id;
+  const isAdmin = message.member?.permissions?.has(PermissionFlagsBits.ManageGuild);
 
-  // Awali dengan awp (contoh: awp lantas / awp https://...)
+  // awp / awplay
   if (lower.startsWith("awp ") || lower.startsWith("awplay ") || lower === "awp") {
     const query = content.replace(/^aw(play|p)\s*/i, "").trim();
     if (!query) {
-      return message.reply("Gunakan: `awp <judul lagu atau link>` (contoh: `awp Pelangi`)");
+      return message.reply("Gunakan: `awp <judul lagu atau link>` (contoh: `awp keshi beside you`)");
     }
     return executePlay(
       query,
@@ -406,8 +548,33 @@ client.on(Events.MessageCreate, async (message) => {
       message.guild,
       message.channel,
       message.channel,
-      (replyContent) => (typeof replyContent === "string" ? message.reply(replyContent) : message.reply(replyContent))
+      (replyContent) => message.reply(replyContent)
     );
+  }
+
+  // awl / awlyrics (Lirik lagu)
+  if (lower.startsWith("awl") || lower.startsWith("awlyrics")) {
+    const query = content.replace(/^aw(lyrics|l)\s*/i, "").trim();
+    const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
+    const targetTitle = query || queue.current?.title;
+    if (!targetTitle) {
+      return message.reply("Gunakan: `awl <judul lagu>` atau putar lagu terlebih dahulu.");
+    }
+
+    const waitMsg = await message.reply("🔍 Mencari lirik lagu...");
+    const lirik = await fetchLyrics(targetTitle, queue.current?.artist || "");
+    if (!lirik) {
+      return waitMsg.edit(`Lirik untuk **${targetTitle}** tidak ditemukan.`);
+    }
+
+    const snippet = lirik.lyrics.length > 3900 ? lirik.lyrics.slice(0, 3900) + "\n\n...(lirik terpotong)" : lirik.lyrics;
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(`📝 Lirik: ${lirik.title || targetTitle}`)
+      .setDescription(snippet)
+      .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
+
+    return waitMsg.edit({ content: null, embeds: [embed] });
   }
 
   // awstop
@@ -415,6 +582,9 @@ client.on(Events.MessageCreate, async (message) => {
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
     if (!canControlInVoice(message.member, queue)) {
       return message.reply("Masuk ke voice channel bot terlebih dahulu.");
+    }
+    if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+      return message.reply(`⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
     }
     music.stop(message.guild.id);
     return message.reply("⏹️ Musik dihentikan.");
@@ -426,20 +596,33 @@ client.on(Events.MessageCreate, async (message) => {
     if (!canControlInVoice(message.member, queue)) {
       return message.reply("Masuk ke voice channel bot terlebih dahulu.");
     }
+    const currentTrack = queue.current;
+    if (!currentTrack) return message.reply("Tidak ada lagu untuk dilewati.");
+    if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
+      return message.reply(`⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang dapat melewati (skip) lagunya.`);
+    }
     if (!music.skip(message.guild.id)) return message.reply("Tidak ada lagu untuk dilewati.");
     return message.reply("⏭️ Lagu dilewati.");
   }
 
-  // awpause & awresume
+  // awpause
   if (lower === "awpause") {
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
     if (!canControlInVoice(message.member, queue)) return message.reply("Masuk ke voice channel bot terlebih dahulu.");
+    if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+      return message.reply(`⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menjeda lagu.`);
+    }
     if (!queue.player.pause()) return message.reply("Tidak ada musik yang sedang diputar.");
     return message.reply("⏸️ Musik dijeda.");
   }
+
+  // awresume
   if (lower === "awresume") {
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
     if (!canControlInVoice(message.member, queue)) return message.reply("Masuk ke voice channel bot terlebih dahulu.");
+    if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
+      return message.reply(`⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat melanjutkan lagu.`);
+    }
     if (!queue.player.unpause()) return message.reply("Musik tidak sedang dijeda.");
     return message.reply("▶️ Musik dilanjutkan.");
   }
@@ -449,8 +632,8 @@ client.on(Events.MessageCreate, async (message) => {
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
     if (!queue.current) return message.reply("Tidak ada lagu yang sedang diputar.");
     return message.reply({
-      embeds: [createMusicCard("Sedang Memutar", queue.current, queue, message.guild)],
-      components: [controls()]
+      embeds: [createMusicCard("Now playing", queue.current, queue, message.guild)],
+      components: createControlRows(queue)
     });
   }
 
@@ -462,7 +645,7 @@ client.on(Events.MessageCreate, async (message) => {
     const more = queue.tracks.length > tracks.length ? `\n...dan ${queue.tracks.length - tracks.length} lagu lainnya.` : "";
     return message.reply({
       embeds: [new EmbedBuilder()
-        .setColor(0x0099ff)
+        .setColor(0x5865F2)
         .setTitle("Antrean Ada Wong")
         .setDescription([current, "", ...tracks, more].filter(Boolean).join("\n"))]
     });
@@ -494,7 +677,6 @@ client.on(Events.InteractionCreate, (interaction) => {
 client.once(Events.ClientReady, async (readyClient) => {
   logger.info(`${readyClient.user.tag} (Ada Wong) berhasil online.`);
 
-  // Cetak link invite resmi dengan izin otomatis
   const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${config.clientId}&scope=bot%20applications.commands&permissions=8`;
   logger.info(`🔗 Link invite bot dengan izin lengkap: ${inviteUrl}`);
 
@@ -502,10 +684,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     if (!saved.stayInVoice || !saved.voiceChannelId) continue;
     const guild = readyClient.guilds.cache.get(guildId);
     const channel = guild?.channels.cache.get(saved.voiceChannelId);
-    if (!guild || !channel?.isVoiceBased()) {
-      logger.warn(`[${guildId}] Voice channel 24/7 tidak tersedia; lewati pemulihan koneksi.`);
-      continue;
-    }
+    if (!guild || !channel?.isVoiceBased()) continue;
     try {
       await connectToVoice(guild, channel);
       logger.info(`[${guildId}] Koneksi voice 24/7 dipulihkan.`);
@@ -544,58 +723,12 @@ app.get("/api/status", (_request, response) => {
 app.get("/api/guilds", requireDashboardToken, (_request, response) => {
   response.json(client.guilds.cache.map((guild) => ({ id: guild.id, name: guild.name })));
 });
-app.get("/api/guilds/:guildId/settings", requireDashboardToken, (request, response) => {
-  const guild = client.guilds.cache.get(request.params.guildId);
-  if (!guild) return response.status(404).json({ error: "Server Discord tidak ditemukan." });
-  const saved = getDefaults(guild.id);
-  const queue = music.queues.get(guild.id);
-  return response.json({
-    autoplay: queue?.autoplay ?? saved.autoplay,
-    loopMode: queue?.loopMode || saved.loopMode,
-    volume: queue?.volume ?? saved.volume
-  });
-});
-app.post("/api/guilds/:guildId/settings", requireDashboardToken, (request, response) => {
-  const guild = client.guilds.cache.get(request.params.guildId);
-  if (!guild) return response.status(404).json({ error: "Server Discord tidak ditemukan." });
-  const { autoplay, loopMode, volume } = request.body || {};
-  const patch = {};
 
-  if (autoplay !== undefined) {
-    if (typeof autoplay !== "boolean") return response.status(400).json({ error: "autoplay harus boolean." });
-    patch.autoplay = autoplay;
-  }
-  if (loopMode !== undefined) {
-    if (!["off", "track", "queue"].includes(loopMode)) {
-      return response.status(400).json({ error: "loopMode harus off, track, atau queue." });
-    }
-    patch.loopMode = loopMode;
-  }
-  if (volume !== undefined) {
-    if (!Number.isInteger(volume) || volume < 0 || volume > 100) {
-      return response.status(400).json({ error: "volume harus berupa angka bulat dari 0 sampai 100." });
-    }
-    patch.volume = volume;
-  }
-  if (Object.keys(patch).length === 0) {
-    return response.status(400).json({ error: "Tidak ada pengaturan valid untuk disimpan." });
-  }
-
-  settings.update(guild.id, patch);
-  if (patch.autoplay !== undefined) music.setAutoplay(guild.id, patch.autoplay, getDefaults(guild.id));
-  if (patch.loopMode !== undefined) music.setLoopMode(guild.id, patch.loopMode, getDefaults(guild.id));
-  if (patch.volume !== undefined) music.setVolume(guild.id, patch.volume, getDefaults(guild.id));
-  const saved = getDefaults(guild.id);
-  return response.json({
-    ok: true,
-    settings: { autoplay: saved.autoplay, loopMode: saved.loopMode, volume: saved.volume }
-  });
-});
 const dashboard = app.listen(config.port, config.dashboardHost, () => {
   logger.info(`Dashboard lokal tersedia di http://${config.dashboardHost}:${config.port}`);
 });
 dashboard.on("error", (error) => {
-  logger.warn("Peringatan: Dashboard HTTP tidak dapat dibuka di port ini (umum pada hosting bot container). Bot Discord tetap berjalan normal:", error.message);
+  logger.warn("Peringatan: Dashboard HTTP tidak dapat dibuka di port ini:", error.message);
 });
 
 client.login(config.token).catch((error) => {

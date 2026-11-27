@@ -3,10 +3,10 @@ const { SlashCommandBuilder } = require("discord.js");
 const commands = [
   new SlashCommandBuilder()
     .setName("play")
-    .setDescription("Putar musik dari YouTube, Spotify, SoundCloud, atau judul lagu")
+    .setDescription("Putar musik dari Spotify, Deezer, YouTube, atau judul lagu")
     .addStringOption((option) => option
       .setName("query")
-      .setDescription("Judul lagu, link YouTube, Spotify, atau SoundCloud")
+      .setDescription("Judul lagu, link Spotify, Deezer, atau YouTube")
       .setRequired(true)
       .setMaxLength(2000)),
   new SlashCommandBuilder().setName("pause").setDescription("Jeda musik"),
@@ -15,6 +15,13 @@ const commands = [
   new SlashCommandBuilder().setName("stop").setDescription("Hentikan musik dan keluar dari voice channel"),
   new SlashCommandBuilder().setName("queue").setDescription("Tampilkan lagu yang sedang diputar dan antrean"),
   new SlashCommandBuilder().setName("nowplaying").setDescription("Tampilkan lagu yang sedang diputar"),
+  new SlashCommandBuilder()
+    .setName("lyrics")
+    .setDescription("Tampilkan lirik lagu yang sedang diputar atau cari lirik lagu")
+    .addStringOption((option) => option
+      .setName("judul")
+      .setDescription("Judul lagu yang ingin dicari liriknya (opsional)")
+      .setRequired(false)),
   new SlashCommandBuilder()
     .setName("volume")
     .setDescription("Atur volume bot")
@@ -26,7 +33,7 @@ const commands = [
       .setRequired(true)),
   new SlashCommandBuilder()
     .setName("autoplay")
-    .setDescription("Putar ulang lagu terakhir saat antrean habis")
+    .setDescription("Putar lagu rekomendasi sesuai genre & artis saat antrean habis")
     .addBooleanOption((option) => option
       .setName("aktif")
       .setDescription("Aktifkan autoplay")

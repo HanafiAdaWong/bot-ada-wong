@@ -34,28 +34,26 @@ function validateAudioUrl(value, allowedHosts) {
 }
 
 function readConfig(env = process.env) {
-  const missing = ["DISCORD_TOKEN", "CLIENT_ID"].filter((key) => !env[key]);
+  const token = (env.DISCORD_TOKEN || "").trim();
+  const clientId = (env.CLIENT_ID || "").trim();
+
+  const missing = [];
+  if (!token) missing.push("DISCORD_TOKEN");
+  if (!clientId) missing.push("CLIENT_ID");
   if (missing.length) {
-    throw new Error(`Konfigurasi wajib belum diisi: ${missing.join(", ")} (lihat .env.example).`);
+    throw new Error(`Konfigurasi wajib belum diisi: ${missing.join(", ")} (isi di file .env atau Environment Variables hosting).`);
   }
 
   const port = Number(env.PORT || 3000);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("PORT harus berupa angka antara 1 dan 65535.");
-  }
-
   const dashboardHost = env.DASHBOARD_HOST || "127.0.0.1";
   const dashboardToken = env.DASHBOARD_TOKEN || "";
-  if (!["127.0.0.1", "::1", "localhost"].includes(dashboardHost.toLowerCase()) && !dashboardToken) {
-    throw new Error("DASHBOARD_TOKEN wajib diisi saat DASHBOARD_HOST bukan alamat loopback.");
-  }
 
   return {
-    token: env.DISCORD_TOKEN,
-    clientId: env.CLIENT_ID,
+    token,
+    clientId,
     guildId: env.GUILD_ID || "",
     allowedAudioHosts: parseAllowedHosts(env.ALLOWED_AUDIO_HOSTS),
-    port,
+    port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 3000,
     dashboardHost,
     dashboardToken,
     dataDir: path.resolve(env.DATA_DIR || "./data")

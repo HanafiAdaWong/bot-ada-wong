@@ -18,7 +18,6 @@ function getFfmpegBinary() {
       fs.accessSync(staticFfmpeg, fs.constants.X_OK);
       return staticFfmpeg;
     } catch {
-      // coba buat executable jika di linux
       try {
         fs.chmodSync(staticFfmpeg, 0o755);
         return staticFfmpeg;
@@ -28,18 +27,15 @@ function getFfmpegBinary() {
     }
   }
 
-  // Coba cek ffmpeg bawaan sistem hosting
   try {
     execSync("ffmpeg -version", { stdio: "ignore" });
     return "ffmpeg";
   } catch {
-    // jika tetap tidak ada, kembalikan static path
     return staticFfmpeg || "ffmpeg";
   }
 }
 
 const ffmpegExecutable = getFfmpegBinary();
-
 const MAX_QUEUE_SIZE = 100;
 
 function createMusicManager({ allowedHosts, logger }) {
@@ -61,6 +57,10 @@ function createMusicManager({ allowedHosts, logger }) {
       player,
       connection: null,
       textChannel: null,
+      voiceChannelId: null,
+      voiceChannelName: null,
+      voiceStarterId: null,      // Orang yang pertama kali memanggil bot ke voice
+      voiceStarterName: null,
       tracks: [],
       current: null,
       lastTrack: null,
@@ -87,6 +87,7 @@ function createMusicManager({ allowedHosts, logger }) {
       if (previous) {
         queue.lastTrack = previous;
         if (previous.url) queue.playedUrls.add(previous.url);
+        if (previous.title) queue.playedUrls.add(previous.title);
 
         // Jika bukan di-skip dan mode loop aktif
         if (!skipped && queue.loopMode === "track") {
@@ -94,7 +95,6 @@ function createMusicManager({ allowedHosts, logger }) {
         } else if (!skipped && queue.loopMode === "queue") {
           queue.tracks.push(previous);
         } else if (queue.autoplay && queue.tracks.length === 0) {
-          // Autoplay: hanya cari lagu baru jika fitur autoplay aktif (diset user)
           try {
             const nextTrack = await getAutoplayRecommendation(previous, queue.playedUrls);
             if (nextTrack) {
@@ -131,6 +131,7 @@ function createMusicManager({ allowedHosts, logger }) {
   }
 
   async function playNext(guildId, queue) {
+    // Jika sedang memutar lagu yang aktif, jangan ganggu sama sekali (mencegah lag / audio terpotong)
     if (queue.current || queue.tracks.length === 0) return;
 
     const track = queue.tracks.shift();
@@ -206,7 +207,6 @@ function createMusicManager({ allowedHosts, logger }) {
       logger.error(`[${guildId}] Tidak dapat memutar "${track.title}":`, error);
       queue.current = null;
       queue.skipCurrent = false;
-      // Jangan langsung memutar next secara instan jika error berturut-turut untuk mencegah spam
       setTimeout(() => {
         if (generation === queue.generation) {
           void playNext(guildId, queue);
@@ -221,7 +221,10 @@ function createMusicManager({ allowedHosts, logger }) {
       throw new Error(`Antrean penuh (maksimal ${MAX_QUEUE_SIZE} lagu).`);
     }
     queue.tracks.push(track);
-    void playNext(guildId, queue);
+    // Hanya picu playNext jika TIDAK ada lagu yang sedang dimainkan
+    if (!queue.current) {
+      void playNext(guildId, queue);
+    }
     return queue;
   }
 
@@ -233,7 +236,9 @@ function createMusicManager({ allowedHosts, logger }) {
     }
     const added = tracks.slice(0, available);
     queue.tracks.push(...added);
-    void playNext(guildId, queue);
+    if (!queue.current) {
+      void playNext(guildId, queue);
+    }
     return { queue, count: added.length };
   }
 
@@ -265,6 +270,8 @@ function createMusicManager({ allowedHosts, logger }) {
     queue.player.stop(true);
     queue.current = null;
     queue.currentResource = null;
+    queue.voiceStarterId = null;
+    queue.voiceStarterName = null;
     queue.connection?.destroy();
     queue.connection = null;
     return queue;
