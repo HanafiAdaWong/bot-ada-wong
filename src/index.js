@@ -484,12 +484,16 @@ async function handleSelectMenu(interaction) {
     // jika sudah terhapus
   }
 
-  // Jika ada pesan pemicu (misal chat 'aws judul' dari user), hapus juga agar chat bersih
+  // Hapus pesan pemicu (chat pengguna seperti 'aws judul')
   if (track.userTriggerMessage) {
     try {
-      await track.userTriggerMessage.delete();
+      if (track.userTriggerMessage.deletable) {
+        await track.userTriggerMessage.delete();
+      } else {
+        await track.userTriggerMessage.delete().catch(() => {});
+      }
     } catch {
-      // ignore
+      // Abaikan jika bot tidak memiliki izin Manage Messages di channel tersebut
     }
   }
 

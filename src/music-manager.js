@@ -64,6 +64,7 @@ function createMusicManager({ allowedHosts, logger }) {
       tracks: [],
       current: null,
       lastTrack: null,
+      preloadedAutoplay: null,
       currentResource: null,
       process: null,
       generation: 0,
@@ -95,13 +96,19 @@ function createMusicManager({ allowedHosts, logger }) {
         } else if (!skipped && queue.loopMode === "queue") {
           queue.tracks.push(previous);
         } else if (queue.autoplay && queue.tracks.length === 0) {
-          try {
-            const nextTrack = await getAutoplayRecommendation(previous, queue.playedUrls);
-            if (nextTrack) {
-              queue.tracks.push(nextTrack);
+          // Gunakan preloadedAutoplay instan tanpa delay 0 detik!
+          if (queue.preloadedAutoplay) {
+            queue.tracks.push(queue.preloadedAutoplay);
+            queue.preloadedAutoplay = null;
+          } else {
+            try {
+              const nextTrack = await getAutoplayRecommendation(previous, queue.playedUrls);
+              if (nextTrack) {
+                queue.tracks.push(nextTrack);
+              }
+            } catch (err) {
+              logger.error(`[${guildId}] Autoplay failed:`, err);
             }
-          } catch (err) {
-            logger.error(`[${guildId}] Autoplay failed:`, err);
           }
         }
       }
@@ -201,6 +208,17 @@ function createMusicManager({ allowedHosts, logger }) {
       queue.player.play(resource);
 
       events.emit("trackStart", { guildId, queue, track });
+
+      // Pre-fetch lagu Autoplay berikutnya di latar belakang (Background) agar transisi 0 delay
+      if (queue.autoplay && queue.tracks.length === 0) {
+        getAutoplayRecommendation(track, queue.playedUrls)
+          .then((pre) => {
+            if (pre && generation === queue.generation) {
+              queue.preloadedAutoplay = pre;
+            }
+          })
+          .catch(() => {});
+      }
     } catch (error) {
       if (generation !== queue.generation) return;
       logger.error(`[${guildId}] Tidak dapat memutar "${track.title}":`, error);
@@ -270,6 +288,7 @@ function createMusicManager({ allowedHosts, logger }) {
     if (!queue) return null;
     queue.tracks = [];
     queue.lastTrack = null;
+    queue.preloadedAutoplay = null;
     queue.skipCurrent = true;
     queue.generation += 1;
     stopProcess(queue);
