@@ -7,6 +7,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
   Client,
   EmbedBuilder,
   Events,
@@ -23,7 +24,7 @@ const { commands } = require("./commands");
 const { createMusicManager } = require("./music-manager");
 const { createSettingsStore } = require("./settings-store");
 const { readConfig } = require("./config");
-const { resolveTracks, fetchLyrics } = require("./audio-source");
+const { resolveTracks, fetchLyrics, searchTracks, formatDuration } = require("./audio-source");
 
 const config = readConfig();
 const settings = createSettingsStore(config.dataDir);
@@ -39,12 +40,15 @@ const client = new Client({
   ]
 });
 
+// Cache untuk pencarian lagu /search (query -> list of tracks)
+const searchCache = new Map();
+
 function getDefaults(guildId) {
   return settings.get(guildId);
 }
 
 /**
- * Format waktu saat ini ke Waktu Indonesia Barat (WIB)
+ * Format waktu ke WIB (Waktu Indonesia Barat)
  */
 function getIndonesianTime() {
   return new Intl.DateTimeFormat("id-ID", {
@@ -56,17 +60,28 @@ function getIndonesianTime() {
 }
 
 /**
- * Kontrol Tombol Modern sesuai desain FlaviBot (Row 1 & Row 2)
+ * Kontrol Tombol: Pause dan Resume TERPISAH
  */
 function createControlRows(queue) {
+  const isPaused = queue?.player?.state?.status === "paused";
+
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ada_pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("ada_pause")
+      .setLabel("Pause")
+      .setEmoji("⏸️")
+      .setStyle(isPaused ? ButtonStyle.Secondary : ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("ada_resume")
+      .setLabel("Resume")
+      .setEmoji("▶️")
+      .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("ada_skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("ada_stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("ada_like").setLabel("Like").setEmoji("🤍").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("ada_stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger)
   );
 
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ada_like").setLabel("Like").setEmoji("🤍").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("ada_autoplay_toggle")
       .setLabel("AutoPlay")
@@ -83,40 +98,62 @@ function createControlRows(queue) {
 }
 
 /**
- * Membuat progress bar elegan (contoh: 🔘━━━━━━━━━━━)
+ * Membuat progress bar dinamis berjalan
  */
-function createProgressBar(durationSec) {
-  if (!durationSec || durationSec <= 0) {
-    return "🟣━━━━━━━━━━━━━━━━━━━━";
+function createProgressBar(currentSec, totalSec) {
+  const totalBars = 20;
+  if (!totalSec || totalSec <= 0) {
+    return "🟣" + "━".repeat(totalBars);
   }
-  return "🟣━━━━━━━━━━━━━━━━━━━━";
+  const progressRatio = Math.min(Math.max(currentSec / totalSec, 0), 1);
+  const currentPos = Math.round(progressRatio * totalBars);
+
+  let bar = "";
+  for (let i = 0; i <= totalBars; i++) {
+    if (i === currentPos) {
+      bar += "🟣";
+    } else {
+      bar += "━";
+    }
+  }
+  return bar;
 }
 
 /**
- * Membuat Embed UI Modern & Bersih persis seperti foto referensi ke-2 (FlaviBot UI)
+ * Membuat Embed UI Kartu Pemutar Modern FlaviBot
  */
 function createMusicCard(statusTitle, track, queue, guild) {
   const queueCount = queue.tracks.length;
   const loopDisplay = queue.loopMode === "track" ? "Track" : queue.loopMode === "queue" ? "Queue" : "Off";
-  const duration = track.durationFormatted || "00:00";
+  const duration = track.durationFormatted || formatDuration(track.duration) || "00:00";
   const channelName = queue.voiceChannelName ? `🔊 ${queue.voiceChannelName}` : "🔊 Voice Channel";
   const requesterDisplay = track.requesterId ? `<@${track.requesterId}>` : (track.requester || "User");
 
-  // Garis deskripsi bergaya bullet seperti FlaviBot
+  // Hitung playback seconds saat ini
+  let elapsedSec = 0;
+  if (queue.startedAt) {
+    elapsedSec = Math.floor((Date.now() - queue.startedAt) / 1000);
+    if (track.duration && elapsedSec > track.duration) {
+      elapsedSec = track.duration;
+    }
+  }
+  const elapsedFormatted = formatDuration(elapsedSec);
+  const progressBar = createProgressBar(elapsedSec, track.duration);
+
   const descriptionLines = [
-    `[${track.title}](${track.url?.startsWith("http") ? track.url : "https://deezer.com"})`,
+    `[${track.title}](${track.url?.startsWith("http") ? track.url : "https://youtube.com"})`,
     "",
     `• Added by ${requesterDisplay}`,
     `• \`${channelName}\``,
     "",
     `Queue Size: **${queueCount}** - Volume: **${queue.volume}%** - Loop: **${loopDisplay}**`,
     "",
-    `${createProgressBar(track.duration)}`,
-    `\`0:00\`${" ".repeat(30)}\`${duration}\``
+    `${progressBar}`,
+    `\`${elapsedFormatted}\`${" ".repeat(25)}\`${duration}\``
   ];
 
   const embed = new EmbedBuilder()
-    .setColor(0x5865F2) // Warna ungu / biru modern khas bot musik premium
+    .setColor(0x5865F2)
     .setAuthor({
       name: statusTitle || "Now playing",
       iconURL: client.user.displayAvatarURL()
@@ -134,7 +171,7 @@ function createMusicCard(statusTitle, track, queue, guild) {
 }
 
 /**
- * Membuat Embed Panduan / Help yang rapi dan informatif
+ * Embed Panduan / Help
  */
 function createHelpEmbed() {
   return new EmbedBuilder()
@@ -143,34 +180,35 @@ function createHelpEmbed() {
       name: "Panduan & Perintah Ada Wong Music Bot",
       iconURL: client.user.displayAvatarURL()
     })
-    .setDescription("Bot musik Ada Wong dengan antarmuka modern, pemutar Spotify/Deezer, lirik, dan autoplay genre!")
+    .setDescription("Bot musik Ada Wong dengan UI modern, pemutar akurat, progress bar waktu berjalan, lirik publik, dan pencarian lagu!")
     .addFields(
       {
         name: "⚡ Prefix Commands (Ketik langsung di chat):",
         value: [
-          "• `awp <judul/link>` — Putar lagu dari Spotify / Deezer / YouTube",
-          "• `awl` / `awlyrics [judul]` — Tampilkan lirik lagu",
-          "• `awstop` / `aws` — Hentikan musik & keluar dari voice channel",
+          "• `awp <judul/link>` — Putar lagu langsung *(contoh: `awp NewJeans Super Shy`)*",
+          "• `aws` / `awsearch <judul>` — Cari lagu dan pilih dari dropdown menu",
+          "• `awl` / `awlyrics [judul]` — Tampilkan lirik lagu (bisa ditutup dengan tombol)",
+          "• `awpause` & `awresume` — Jeda atau lanjutkan lagu (khusus pengundang pertama)",
           "• `awskip` / `awn` — Lewati lagu (hanya peminta lagu)",
-          "• `awpause` & `awresume` — Jeda / lanjut (khusus pengundang pertama)",
+          "• `awstop` — Hentikan musik & keluar",
           "• `awnp` — Tampilkan kartu musik lagu saat ini",
-          "• `awqueue` / `awq` — Tampilkan daftar antrean lagu",
-          "• `awhelp` / `awh` — Menampilkan pesan bantuan ini"
+          "• `awqueue` / `awq` — Tampilkan antrean lagu",
+          "• `awhelp` / `awh` — Menampilkan bantuan ini"
         ].join("\n")
       },
       {
         name: "🎮 Slash Commands (Gunakan `/`):",
         value: [
           "• `/play <query>` — Putar lagu",
-          "• `/lyrics [judul]` — Cari lirik lagu",
-          "• `/pause` & `/resume` — Jeda atau lanjutkan lagu",
-          "• `/skip` & `/stop` — Lewati atau hentikan lagu",
-          "• `/nowplaying` & `/queue` — Info lagu saat ini & antrean",
-          "• `/volume <0-100>` — Atur volume pemutaran bot",
-          "• `/loop <off|track|queue>` — Atur mode loop",
-          "• `/autoplay <aktif:true/false>` — Autoplay rekomendasi genre musik",
-          "• `/247 <aktif:true/false>` — Bot tetap stand-by di voice channel (Admin)",
-          "• `/help` — Menampilkan bantuan ini"
+          "• `/search <query>` — Cari lagu dan pilih pilihan",
+          "• `/lyrics [judul]` — Tampilkan lirik",
+          "• `/pause` & `/resume` — Jeda / Lanjut",
+          "• `/skip` & `/stop` — Lewati / Hentikan",
+          "• `/nowplaying` & `/queue` — Status lagu & antrean",
+          "• `/volume <0-100>` — Atur volume",
+          "• `/autoplay <aktif:true/false>` — Autoplay rekomendasi genre",
+          "• `/loop <off|track|queue>` — Mode pengulangan",
+          "• `/help` — Bantuan"
         ].join("\n")
       }
     )
@@ -179,12 +217,49 @@ function createHelpEmbed() {
     });
 }
 
-// Event otomatis saat lagu berikutnya mulai diputar
+// Timer untuk mengupdate timeplay progress bar secara langsung
+const progressIntervals = new Map();
+
+function startProgressUpdater(guildId, queue, message) {
+  if (progressIntervals.has(guildId)) {
+    clearInterval(progressIntervals.get(guildId));
+  }
+
+  // Update embed setiap 8 detik agar progress bar berjalan tanpa terkena rate-limit Discord
+  const interval = setInterval(async () => {
+    if (!queue.current || !message || queue.player?.state?.status !== "playing") {
+      return;
+    }
+    try {
+      const updatedEmbed = createMusicCard("Now playing", queue.current, queue, message.guild);
+      await message.edit({ embeds: [updatedEmbed], components: createControlRows(queue) });
+    } catch {
+      clearInterval(interval);
+      progressIntervals.delete(guildId);
+    }
+  }, 8000);
+
+  progressIntervals.set(guildId, interval);
+}
+
+function stopProgressUpdater(guildId) {
+  if (progressIntervals.has(guildId)) {
+    clearInterval(progressIntervals.get(guildId));
+    progressIntervals.delete(guildId);
+  }
+}
+
+// Event otomatis saat lagu mulai diputar
 music.events.on("trackStart", async ({ guildId, queue, track }) => {
+  stopProgressUpdater(guildId);
+  queue.startedAt = Date.now();
+
   if (!queue.textChannel) return;
   try {
     const embed = createMusicCard("Now playing", track, queue);
-    await queue.textChannel.send({ embeds: [embed], components: createControlRows(queue) });
+    const sentMsg = await queue.textChannel.send({ embeds: [embed], components: createControlRows(queue) });
+    queue.cardMessage = sentMsg;
+    startProgressUpdater(guildId, queue, sentMsg);
   } catch (err) {
     logger.error(`[${guildId}] Gagal mengirim kartu musik:`, err);
   }
@@ -210,7 +285,6 @@ async function connectToVoice(guild, channel, inviterMember = null) {
   queue.voiceChannelId = channel.id;
   queue.voiceChannelName = channel.name;
 
-  // Catat siapa yang pertama kali mengundang bot ke room
   if (!queue.voiceStarterId && inviterMember) {
     queue.voiceStarterId = inviterMember.id;
     queue.voiceStarterName = inviterMember.displayName || inviterMember.user?.username;
@@ -243,6 +317,16 @@ async function handleButton(interaction) {
   const guildId = interaction.guildId;
   const queue = music.getQueue(guildId, getDefaults(guildId));
 
+  // Tombol tutup lirik bisa diklik siapa saja di text channel
+  if (interaction.customId === "ada_close_lyrics") {
+    try {
+      await interaction.message.delete();
+    } catch {
+      await interaction.reply({ content: "Lirik ditutup.", ephemeral: true });
+    }
+    return;
+  }
+
   if (!canControlInVoice(interaction.member, queue)) {
     return replyError(interaction, "⚠️ Masuk ke voice channel bot untuk menggunakan tombol kontrol.");
   }
@@ -252,45 +336,58 @@ async function handleButton(interaction) {
 
   switch (interaction.customId) {
     case "ada_pause": {
-      // Hanya pengundang pertama atau Admin yang bisa Jeda
       if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
-        return replyError(interaction, `⚠️ Hanya yang pertama kali mengundang bot (<@${queue.voiceStarterId}>) yang dapat menjeda lagu.`);
+        return replyError(interaction, `⚠️ Hanya yang pertama mengundang bot (<@${queue.voiceStarterId}>) yang dapat menjeda lagu.`);
+      }
+      if (queue.player.state.status === "paused") {
+        return replyError(interaction, "Musik sudah dalam keadaan dijeda.");
       }
       if (!queue.player.pause()) return replyError(interaction, "Tidak ada musik yang sedang diputar.");
+      // Update tampilan kartu tombol
+      if (queue.cardMessage) {
+        const embed = createMusicCard("Paused", queue.current, queue, interaction.guild);
+        queue.cardMessage.edit({ embeds: [embed], components: createControlRows(queue) }).catch(() => {});
+      }
       return interaction.reply({ content: "⏸️ Musik dijeda.", ephemeral: true });
     }
 
     case "ada_resume": {
-      // Hanya pengundang pertama atau Admin yang bisa Lanjut
       if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
-        return replyError(interaction, `⚠️ Hanya yang pertama kali mengundang bot (<@${queue.voiceStarterId}>) yang dapat melanjutkan lagu.`);
+        return replyError(interaction, `⚠️ Hanya yang pertama mengundang bot (<@${queue.voiceStarterId}>) yang dapat melanjutkan lagu.`);
       }
-      if (!queue.player.unpause()) return replyError(interaction, "Musik tidak sedang dijeda.");
+      if (queue.player.state.status !== "paused") {
+        return replyError(interaction, "Musik tidak sedang dijeda.");
+      }
+      if (!queue.player.unpause()) return replyError(interaction, "Gagal melanjutkan musik.");
+      if (queue.cardMessage) {
+        const embed = createMusicCard("Now playing", queue.current, queue, interaction.guild);
+        queue.cardMessage.edit({ embeds: [embed], components: createControlRows(queue) }).catch(() => {});
+      }
       return interaction.reply({ content: "▶️ Musik dilanjutkan.", ephemeral: true });
     }
 
     case "ada_skip": {
-      // Hanya orang yang menambahkan lagu yang sedang diputar (atau Admin) yang bisa skip
       const currentTrack = queue.current;
       if (!currentTrack) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
       if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
-        return replyError(interaction, `⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang berhak melewati (skip) lagunya.`);
+        return replyError(interaction, `⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang dapat melewati lagunya.`);
       }
+      stopProgressUpdater(guildId);
       if (!music.skip(guildId)) return replyError(interaction, "Gagal melewati lagu.");
       return interaction.reply({ content: "⏭️ Lagu dilewati.", ephemeral: true });
     }
 
     case "ada_stop": {
-      // Hanya pengundang bot atau admin yang bisa stop
       if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
         return replyError(interaction, `⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
       }
+      stopProgressUpdater(guildId);
       music.stop(guildId);
       return interaction.reply({ content: "⏹️ Musik dihentikan.", ephemeral: true });
     }
 
     case "ada_like": {
-      return interaction.reply({ content: `❤️ Kamu menyukai lagu **${queue.current?.title || "ini"}**!`, ephemeral: true });
+      return interaction.reply({ content: `🤍 Kamu menyukai lagu **${queue.current?.title || "ini"}**!`, ephemeral: true });
     }
 
     case "ada_autoplay_toggle": {
@@ -298,14 +395,14 @@ async function handleButton(interaction) {
       music.setAutoplay(guildId, nextState, getDefaults(guildId));
       settings.update(guildId, { autoplay: nextState });
       return interaction.reply({
-        content: nextState ? "📻 **AutoPlay diaktifkan**: Lagu genre serupa akan diputar otomatis saat antrean habis." : "📻 **AutoPlay dinonaktifkan**.",
+        content: nextState ? "🔄 **AutoPlay aktif**: Lagu rekomendasi genre serupa akan diputar otomatis." : "🔄 **AutoPlay nonaktif**.",
         ephemeral: true
       });
     }
 
     case "ada_lyrics_btn": {
-      await interaction.deferReply({ ephemeral: true });
-      if (!queue.current) return interaction.editReply("Tidak ada lagu yang sedang diputar.");
+      if (!queue.current) return replyError(interaction, "Tidak ada lagu yang sedang diputar.");
+      await interaction.deferReply({ ephemeral: false }); // Publik, semua orang bisa baca
       const lirikData = await fetchLyrics(queue.current.title, queue.current.artist);
       if (!lirikData) {
         return interaction.editReply(`Maaf, lirik untuk **${queue.current.title}** tidak ditemukan.`);
@@ -316,7 +413,12 @@ async function handleButton(interaction) {
         .setTitle(`📝 Lirik: ${lirikData.title || queue.current.title}`)
         .setDescription(lirikSnippet)
         .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
-      return interaction.editReply({ embeds: [lyricsEmbed] });
+
+      const closeRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("ada_close_lyrics").setLabel("Tutup Lirik").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+      );
+
+      return interaction.editReply({ embeds: [lyricsEmbed], components: [closeRow] });
     }
 
     default:
@@ -325,7 +427,43 @@ async function handleButton(interaction) {
 }
 
 /**
- * Eksekusi play umum (prefix awp dan slash /play)
+ * Handle pilihan dari Select Menu fitur /search
+ */
+async function handleSelectMenu(interaction) {
+  if (interaction.customId !== "ada_select_search") return;
+  const searchId = interaction.values[0];
+  const track = searchCache.get(searchId);
+
+  if (!track) {
+    return interaction.reply({ content: "Pilihan sudah kadaluarsa. Silakan cari kembali.", ephemeral: true });
+  }
+
+  const voiceChannel = interaction.member?.voice?.channel;
+  if (!voiceChannel) {
+    return interaction.reply({ content: "⚠️ Masuk ke voice channel terlebih dahulu.", ephemeral: true });
+  }
+
+  await interaction.deferUpdate();
+  await connectToVoice(interaction.guild, voiceChannel, interaction.member);
+
+  track.requesterId = interaction.user.id;
+  track.requester = interaction.member.displayName || interaction.user.username;
+
+  const guildId = interaction.guildId;
+  const queue = music.getQueue(guildId, getDefaults(guildId));
+  const isFirst = !queue.current && queue.tracks.length === 0;
+  music.addTrack(guildId, track, getDefaults(guildId));
+
+  if (!isFirst) {
+    const card = createMusicCard("Added to queue", track, queue, interaction.guild);
+    await interaction.editReply({ content: `✅ Memilih: **${track.title}**`, embeds: [card], components: createControlRows(queue) });
+  } else {
+    await interaction.editReply({ content: `🎵 Memuat dan memutar **${track.title}**...`, embeds: [], components: [] });
+  }
+}
+
+/**
+ * Eksekusi play umum
  */
 async function executePlay(query, member, guild, channel, textChannel, sendReply) {
   const guildId = guild.id;
@@ -344,16 +482,13 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
     const requesterName = member.displayName || member.user?.username || "User";
     const requesterId = member.id;
 
-    // Hubungkan dulu ke voice channel tanpa lag
     await connectToVoice(guild, voiceChannel, member);
 
-    // Resolving lagu via Spotify/Deezer/YouTube secara instan
     const tracks = await resolveTracks(query, config.allowedAudioHosts, requesterName);
     if (!tracks || tracks.length === 0) {
       return sendReply(`Tidak dapat menemukan lagu untuk "${query}".`);
     }
 
-    // Set requester ID untuk proteksi skip
     for (const t of tracks) {
       t.requesterId = requesterId;
     }
@@ -385,6 +520,47 @@ async function executePlay(query, member, guild, channel, textChannel, sendReply
   }
 }
 
+/**
+ * Eksekusi Search interaktif dengan Dropdown Menu
+ */
+async function executeSearch(query, member, sendReply) {
+  try {
+    const results = await searchTracks(query, member.displayName || member.user?.username);
+    if (!results || results.length === 0) {
+      return sendReply(`Tidak ditemukan hasil pencarian untuk: "${query}".`);
+    }
+
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId("ada_select_search")
+      .setPlaceholder("Pilih lagu yang ingin diputar...");
+
+    results.slice(0, 10).forEach((t, index) => {
+      const uniqueId = `track_${Date.now()}_${index}`;
+      searchCache.set(uniqueId, t);
+      // Auto hapus cache setelah 5 menit
+      setTimeout(() => searchCache.delete(uniqueId), 300000);
+
+      selectMenu.addOptions({
+        label: `${index + 1}. ${t.title.slice(0, 95)}`,
+        description: `Durasi: ${t.durationFormatted}`,
+        value: uniqueId
+      });
+    });
+
+    const row = new ActionRowBuilder().addComponents(selectMenu);
+    const searchEmbed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(`🔍 Hasil Pencarian: "${query}"`)
+      .setDescription("Silakan pilih lagu dari menu dropdown di bawah ini:")
+      .setFooter({ text: "Pilihan berlaku selama 5 menit" });
+
+    return sendReply({ embeds: [searchEmbed], components: [row] });
+  } catch (err) {
+    logger.error("Search error:", err);
+    return sendReply("Terjadi kesalahan saat mencari lagu.");
+  }
+}
+
 async function handleCommand(interaction) {
   const guildId = interaction.guildId;
   const queue = music.getQueue(guildId, getDefaults(guildId));
@@ -396,8 +572,6 @@ async function handleCommand(interaction) {
   if (command === "play") {
     await interaction.deferReply();
     const query = interaction.options.getString("query");
-    if (!query) return interaction.editReply("Harap masukkan judul lagu atau link.");
-
     return executePlay(
       query,
       interaction.member,
@@ -408,8 +582,14 @@ async function handleCommand(interaction) {
     );
   }
 
-  if (command === "lyrics") {
+  if (command === "search") {
     await interaction.deferReply();
+    const query = interaction.options.getString("query");
+    return executeSearch(query, interaction.member, (msg) => interaction.editReply(msg));
+  }
+
+  if (command === "lyrics") {
+    await interaction.deferReply({ ephemeral: false });
     const targetTitle = interaction.options.getString("judul") || queue.current?.title;
     if (!targetTitle) {
       return interaction.editReply("Tidak ada lagu yang sedang diputar. Gunakan `/lyrics <judul lagu>` untuk mencari.");
@@ -424,7 +604,12 @@ async function handleCommand(interaction) {
       .setTitle(`📝 Lirik: ${lirik.title || targetTitle}`)
       .setDescription(snippet)
       .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
-    return interaction.editReply({ embeds: [embed] });
+
+    const closeRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("ada_close_lyrics").setLabel("Tutup Lirik").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+    );
+
+    return interaction.editReply({ embeds: [embed], components: [closeRow] });
   }
 
   if (command === "pause" || command === "resume" || command === "skip" ||
@@ -456,6 +641,7 @@ async function handleCommand(interaction) {
       if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
         return replyError(interaction, `⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang dapat melewati (skip) lagunya.`);
       }
+      stopProgressUpdater(guildId);
       if (!music.skip(guildId)) return replyError(interaction, "Tidak ada lagu untuk dilewati.");
       return interaction.reply("⏭️ Lagu dilewati.");
     }
@@ -463,6 +649,7 @@ async function handleCommand(interaction) {
       if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
         return replyError(interaction, `⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
       }
+      stopProgressUpdater(guildId);
       music.stop(guildId);
       return interaction.reply("⏹️ Musik dihentikan.");
     }
@@ -527,7 +714,7 @@ async function handleCommand(interaction) {
   }
 }
 
-// Handler Prefix Command (awp, awstop, awskip, awl, dll.)
+// Handler Prefix Command (awp, aws, awsearch, awl, dll.)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
 
@@ -540,7 +727,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (lower.startsWith("awp ") || lower.startsWith("awplay ") || lower === "awp") {
     const query = content.replace(/^aw(play|p)\s*/i, "").trim();
     if (!query) {
-      return message.reply("Gunakan: `awp <judul lagu atau link>` (contoh: `awp keshi beside you`)");
+      return message.reply("Gunakan: `awp <judul lagu atau link>` (contoh: `awp NewJeans Super Shy`)");
     }
     return executePlay(
       query,
@@ -552,7 +739,16 @@ client.on(Events.MessageCreate, async (message) => {
     );
   }
 
-  // awl / awlyrics (Lirik lagu)
+  // awsearch / aws (Pencarian lagu)
+  if (lower.startsWith("awsearch ") || lower.startsWith("aws ") || lower === "awsearch" || lower === "aws") {
+    const query = content.replace(/^aw(search|s)\s*/i, "").trim();
+    if (!query) {
+      return message.reply("Gunakan: `aws <judul lagu>` (contoh: `aws Keshi beside you`)");
+    }
+    return executeSearch(query, message.member, (replyContent) => message.reply(replyContent));
+  }
+
+  // awl / awlyrics (Lirik lagu publik dengan tombol tutup)
   if (lower.startsWith("awl") || lower.startsWith("awlyrics")) {
     const query = content.replace(/^aw(lyrics|l)\s*/i, "").trim();
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
@@ -574,11 +770,15 @@ client.on(Events.MessageCreate, async (message) => {
       .setDescription(snippet)
       .setFooter({ text: `Lirik via LRCLIB • ${getIndonesianTime()} WIB` });
 
-    return waitMsg.edit({ content: null, embeds: [embed] });
+    const closeRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("ada_close_lyrics").setLabel("Tutup Lirik").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+    );
+
+    return waitMsg.edit({ content: null, embeds: [embed], components: [closeRow] });
   }
 
   // awstop
-  if (lower === "awstop" || lower === "aws") {
+  if (lower === "awstop") {
     const queue = music.getQueue(message.guild.id, getDefaults(message.guild.id));
     if (!canControlInVoice(message.member, queue)) {
       return message.reply("Masuk ke voice channel bot terlebih dahulu.");
@@ -586,6 +786,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (queue.voiceStarterId && queue.voiceStarterId !== userId && !isAdmin) {
       return message.reply(`⚠️ Hanya pengundang bot (<@${queue.voiceStarterId}>) yang dapat menghentikan bot.`);
     }
+    stopProgressUpdater(message.guild.id);
     music.stop(message.guild.id);
     return message.reply("⏹️ Musik dihentikan.");
   }
@@ -601,6 +802,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentTrack.requesterId && currentTrack.requesterId !== userId && !isAdmin) {
       return message.reply(`⚠️ Hanya yang menambahkan lagu ini (<@${currentTrack.requesterId}>) yang dapat melewati (skip) lagunya.`);
     }
+    stopProgressUpdater(message.guild.id);
     if (!music.skip(message.guild.id)) return message.reply("Tidak ada lagu untuk dilewati.");
     return message.reply("⏭️ Lagu dilewati.");
   }
@@ -661,9 +863,12 @@ client.on(Events.InteractionCreate, (interaction) => {
   if (!interaction.inGuild()) return;
   const handler = interaction.isButton()
     ? handleButton(interaction)
-    : interaction.isChatInputCommand()
-      ? handleCommand(interaction)
-      : Promise.resolve();
+    : interaction.isStringSelectMenu()
+      ? handleSelectMenu(interaction)
+      : interaction.isChatInputCommand()
+        ? handleCommand(interaction)
+        : Promise.resolve();
+
   void handler.catch(async (error) => {
     logger.error("Gagal memproses interaksi Discord:", error);
     try {
@@ -732,14 +937,17 @@ dashboard.on("error", (error) => {
 });
 
 client.login(config.token).catch((error) => {
-  logger.error("Gagal login ke Discord. Periksa DISCORD_TOKEN dan koneksi jaringan:", error);
+  logger.error("Gagal login ke Discord. Periksa DISCORD_TOKEN / BOT_TOKEN:", error);
   process.exitCode = 1;
 });
 
 process.on("SIGINT", () => {
   logger.info("Mematikan bot...");
   dashboard.close();
-  for (const [guildId] of music.queues) music.stop(guildId);
+  for (const [guildId] of music.queues) {
+    stopProgressUpdater(guildId);
+    music.stop(guildId);
+  }
   client.destroy();
   process.exit(0);
 });
@@ -747,7 +955,10 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   logger.info("Mematikan bot...");
   dashboard.close();
-  for (const [guildId] of music.queues) music.stop(guildId);
+  for (const [guildId] of music.queues) {
+    stopProgressUpdater(guildId);
+    music.stop(guildId);
+  }
   client.destroy();
   process.exit(0);
 });

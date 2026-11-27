@@ -3,21 +3,29 @@ const { SlashCommandBuilder } = require("discord.js");
 const commands = [
   new SlashCommandBuilder()
     .setName("play")
-    .setDescription("Putar musik dari Spotify, Deezer, YouTube, atau judul lagu")
+    .setDescription("Putar musik dari YouTube, Spotify, Deezer, atau judul lagu")
     .addStringOption((option) => option
       .setName("query")
-      .setDescription("Judul lagu, link Spotify, Deezer, atau YouTube")
+      .setDescription("Judul lagu, link YouTube, Spotify, atau Deezer")
       .setRequired(true)
       .setMaxLength(2000)),
+  new SlashCommandBuilder()
+    .setName("search")
+    .setDescription("Cari lagu dan pilih dari daftar hasil pencarian")
+    .addStringOption((option) => option
+      .setName("query")
+      .setDescription("Judul lagu atau kata kunci")
+      .setRequired(true)
+      .setMaxLength(500)),
   new SlashCommandBuilder().setName("pause").setDescription("Jeda musik"),
   new SlashCommandBuilder().setName("resume").setDescription("Lanjutkan musik"),
   new SlashCommandBuilder().setName("skip").setDescription("Lewati lagu yang sedang diputar"),
   new SlashCommandBuilder().setName("stop").setDescription("Hentikan musik dan keluar dari voice channel"),
   new SlashCommandBuilder().setName("queue").setDescription("Tampilkan lagu yang sedang diputar dan antrean"),
-  new SlashCommandBuilder().setName("nowplaying").setDescription("Tampilkan lagu yang sedang diputar"),
+  new SlashCommandBuilder().setName("nowplaying").setDescription("Tampilkan kartu pemutar saat ini"),
   new SlashCommandBuilder()
     .setName("lyrics")
-    .setDescription("Tampilkan lirik lagu yang sedang diputar atau cari lirik lagu")
+    .setDescription("Tampilkan lirik lagu")
     .addStringOption((option) => option
       .setName("judul")
       .setDescription("Judul lagu yang ingin dicari liriknya (opsional)")
